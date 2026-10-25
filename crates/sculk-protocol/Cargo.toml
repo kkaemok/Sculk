@@ -1,0 +1,51 @@
+[package]
+name = "sculk-protocol"
+description = "Bounded experimental LOCO framing and BSON validation"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+repository.workspace = true
+
+[dependencies]
+bytes.workspace = true
+bson.workspace = true
+thiserror.workspace = true
+tokio-util.workspace = true
+
+[dev-dependencies]
+proptest = "1"
+
+[[bench]]
+name = "codec"
+harness = false
+path = "../../benches/codec.rs"
+
+[features]
+experimental-gcm = ["dep:aes-gcm", "dep:rand"]
+loco-handshake = ["experimental-gcm", "dep:rsa", "dep:sha1", "dep:zeroize"]
+
+[dependencies.aes-gcm]
+version = "0.10"
+optional = true
+
+[dependencies.rand]
+version = "0.8"
+optional = true
+
+[dependencies.rsa]
+version = "0.9"
+optional = true
+
+[dependencies.sha1]
+version = "0.10"
+optional = true
+
+[dependencies.zeroize]
+version = "1"
+optional = true
+
+[[bench]]
+name = "encryption"
+harness = false
+path = "../../benches/encryption.rs"
+required-features = ["experimental-gcm"]

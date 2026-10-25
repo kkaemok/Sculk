@@ -1,0 +1,13 @@
+[package]
+name = "sculk-basic-client"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+publish = false
+[dependencies]
+sculk-client.workspace = true
+sculk-protocol.workspace = true
+tokio.workspace = true
+tokio-util.workspace = true
+futures-util.workspace = true
+bson.workspace = true

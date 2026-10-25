@@ -1,0 +1,48 @@
+[
+  {
+    "url": "https://katalk.kakao.com/android/account/login.json",
+    "headers": {
+      "Content-Type": "application/x-www-form-urlencoded",
+      "A": "android/25.9.2/ko",
+      "User-Agent": "KT/25.9.2 An/13 ko",
+      "Accept-Language": "ko",
+      "X-VC": "506dcc4a8aee5fcf"
+    },
+    "body": "password=synthetic-password&device_name=SM-T870&model_name=SM-T870&forced=false&permanent=true&email=owner%40example.invalid&device_uuid=aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"
+  },
+  {
+    "url": "https://katalk.kakao.com/android/account/passcodeLogin/generate",
+    "headers": {
+      "Content-Type": "application/json; charset=utf-8",
+      "A": "android/25.9.2/ko",
+      "User-Agent": "KT/25.9.2 An/13 ko",
+      "Accept-Language": "ko",
+      "X-VC": "506dcc4a8aee5fcf"
+    },
+    "body": "{\"email\":\"owner@example.invalid\",\"password\":\"synthetic-password\",\"permanent\":true,\"device\":{\"name\":\"SM-T870\",\"uuid\":\"aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa\",\"model\":\"SM-T870\",\"osVersion\":\"33\"}}"
+  },
+  {
+    "url": "https://katalk.kakao.com/android/account/passcodeLogin/registerDevice",
+    "headers": {
+      "Content-Type": "application/json; charset=utf-8",
+      "A": "android/25.9.2/ko",
+      "User-Agent": "KT/25.9.2 An/13 ko",
+      "Accept-Language": "ko",
+      "X-VC": "506dcc4a8aee5fcf"
+    },
+    "body": "{\"email\":\"owner@example.invalid\",\"password\":\"synthetic-password\",\"device\":{\"uuid\":\"aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa\"}}"
+  },
+  {
+    "url": "https://katalk.kakao.com/android/account/oauth2_token.json",
+    "headers": {
+      "A": "android/25.9.2/ko",
+      "Authorization": "synthetic-access-aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+      "User-Agent": "KT/25.9.2 An/13 ko",
+      "Accept-Language": "ko",
+      "Content-Type": "application/json; charset=utf-8",
+      "C": "source-request-id",
+      "Connection": "Close"
+    },
+    "body": "{\"access_token\":\"synthetic-access\",\"refresh_token\":\"synthetic-refresh\",\"grant_type\":\"refresh_token\"}"
+  }
+]

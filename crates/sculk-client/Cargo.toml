@@ -1,0 +1,98 @@
+[package]
+name = "sculk-client"
+description = "Experimental bounded asynchronous LOCO request transport"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+repository.workspace = true
+
+[dependencies]
+sculk-protocol.workspace = true
+tokio.workspace = true
+tokio-util.workspace = true
+futures-util.workspace = true
+thiserror.workspace = true
+rand = "0.8"
+
+[[bench]]
+name = "transport"
+harness = false
+path = "../../benches/transport.rs"
+
+[features]
+default = []
+android-auth = ["protocol-connect", "dep:reqwest", "dep:serde", "dep:serde_json", "dep:sha2", "dep:uuid", "dep:libc", "dep:rustix", "zeroize/serde"]
+protocol-connect = ["secure-session", "sculk-protocol/loco-handshake", "dep:bytes"]
+secure-session = ["dep:tokio-rustls", "dep:webpki-roots", "dep:zeroize", "dep:bson"]
+
+[dependencies.tokio-rustls]
+version = "0.26"
+default-features = false
+features = ["ring", "tls12"]
+optional = true
+
+[dependencies.webpki-roots]
+version = "1"
+optional = true
+
+[dependencies.zeroize]
+version = "1"
+optional = true
+
+[dependencies.bson]
+workspace = true
+optional = true
+
+[dev-dependencies]
+rcgen = { version = "0.14", default-features = false, features = ["ring"] }
+tokio = { workspace = true, features = ["test-util"] }
+
+[dependencies.bytes]
+workspace = true
+optional = true
+
+[dev-dependencies.rsa]
+version = "0.9"
+features = ["sha1"]
+
+[dev-dependencies.sha1]
+version = "0.10"
+
+[dependencies.reqwest]
+version = "0.12"
+default-features = false
+features = ["rustls-tls-native-roots", "json"]
+optional = true
+
+[dependencies.serde]
+version = "1"
+features = ["derive"]
+optional = true
+
+[dependencies.serde_json]
+version = "1"
+optional = true
+
+[dependencies.sha2]
+version = "0.10"
+optional = true
+
+[dependencies.uuid]
+version = "1"
+features = ["v4"]
+optional = true
+
+[dependencies.libc]
+version = "0.2"
+optional = true
+
+[dependencies.rustix]
+version = "1"
+features = ["process"]
+optional = true
+
+[[bench]]
+name = "secure_transport"
+harness = false
+path = "../../benches/secure_transport.rs"
+required-features = ["protocol-connect"]

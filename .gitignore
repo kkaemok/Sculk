@@ -1,0 +1,11 @@
+/target/
+/fuzz/target/
+/fuzz/artifacts/
+/fuzz/corpus/
+*.sqlite*
+
+# Local operator configuration and identity; examples use private paths outside checkout.
+/local/
+.env
+*.credentials.json
+*.device-identity

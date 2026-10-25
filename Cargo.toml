@@ -1,0 +1,19 @@
+[workspace]
+members = ["crates/*", "examples/basic-client", "examples/auth-client"]
+resolver = "2"
+
+[workspace.package]
+version = "0.1.0"
+edition = "2021"
+license = "MIT OR Apache-2.0"
+repository = "https://github.com/kkaemok/Sculk"
+
+[workspace.dependencies]
+bytes = "1.10"
+bson = "2.15"
+thiserror = "2"
+tokio = { version = "1.47", features = ["rt", "rt-multi-thread", "macros", "net", "io-util", "sync", "time"] }
+tokio-util = { version = "0.7", features = ["codec"] }
+futures-util = { version = "0.3", features = ["sink"] }
+sculk-protocol = { version = "0.1.0", path = "crates/sculk-protocol" }
+sculk-client = { version = "0.1.0", path = "crates/sculk-client" }
