@@ -20,7 +20,8 @@ No live KakaoTalk test has been performed. All passing tests are offline.
 | Persistent device identity | Optional | Owner-only mode, stable reload, symlink/unsafe mode rejection | No | Unix startup support; tokens not persisted |
 | Native end-to-end developer example | Yes | Build, help/check-config and underlying integrated sequence | No | Runtime --live and explicit account/registration approval required |
 | Secret session persistence | No | No | No | Deferred with authentication |
-| Room/user/message APIs | No | No | No | Blocked on verified authenticated session |
+| Read-only room page / metadata / members | Optional | Source requests, schema fixtures, exact Int64, status/room/cursor guards | No | Experimental subset; one page/request, no title/member guessing |
+| Message sending / read marking / moderation | No new high-level API | No live tests | No | Outside initial account validation |
 | Typed message/join/leave/kick/profile/role events | No | No | No | Blocked on current schemas and replay semantics |
 | OpenChat kick / permissions | No | No | No | Unsupported until verified |
 | Modify departed-member kicked list | No | No | No | No independently verified server operation |
@@ -108,3 +109,23 @@ Current live blockers are an explicitly authorized test account with known numer
 ID, accepted sub-device profile and device confirmation, independently trusted
 server-key identity and approved HTTPS/raw-TCP routes. Follow authentication.md;
 do not paste secrets in chat or assume synthetic fixtures are live captures.
+
+## Phase 5 readiness — 2026-10-26
+
+The CLI now requires an independently checked RSA fingerprint, supports a network-
+free --dry-run, emits static phase labels, writes owner-private sanitized reports,
+and cancels device-consent input without a stuck blocking thread. Password and
+superseded token lifetimes are shorter. TLS name/certificate verification and
+explicit no-downgrade/no-forced-session rules remain intact.
+
+Source-backed read-only LCHATLIST/CHATINFO/GETMEM subsets are implemented and
+fixture-tested; none has been live-tested. High IDs remain exact, mismatching
+room IDs and non-progressing pagination fail, missing fields are not fabricated,
+and unconfirmed/expired sessions cannot make requests. The optional CLI read step
+prints counts only. Automatic pagination, full membership synchronization,
+room title interpretation, message history, read marks and mutation are unsupported.
+
+No owner-approved live credentials/phone workflow was provided. No real account
+connection was attempted. The owner procedure in authentication.md, with a verified
+pin/profile and approved HTTPS/raw TCP routes, is the remaining next step. Uploading
+source to GitHub does not establish live authentication or production readiness.

@@ -1,5 +1,58 @@
 # Verification record
 
+## Phase 5 — 2026-10-26
+
+| Check | Outcome |
+|---|---|
+| `cargo fmt --all -- --check` | Passed |
+| `cargo clippy --workspace --all-targets --all-features --locked -- -D warnings` | Passed |
+| `cargo test --workspace --all-features --locked` | 85 passed; none failed/ignored/filtered |
+| `cargo test --workspace --locked` | 23 passed; optional provider/read-only/tool features not enabled |
+| `cargo build --workspace --release --all-features --locked` | Passed |
+| `RUSTDOCFLAGS="-D warnings" cargo doc --workspace --all-features --no-deps --locked` | Passed |
+| CLI `--help` | Passed; no network |
+| CLI `--dry-run ... --report NEW_PATH` | Completed local validation; private sanitized report, no identity creation/network |
+| Read-only source-fixture generator | Executed actual source methods with all sockets intercepted |
+| Public reference refresh | Four fetched HEADs unchanged; research.md records exact revisions |
+| `git diff --check` | Passed |
+
+All original 73 tests remain. Twelve additions: five CLI tests (strict options,
+pin/report sanitization, level-triggered cancellation and two owned-FD input
+regressions), two provider audit tests (sensitive-header Debug and expired device
+confirmation), and five read-only TLS/mock-session tests. Read-only requests are
+byte-compared with actual Agent source-generated contracts; response schemas are
+synthetic, never live captures. Int64 IDs remain exact beyond 2^53, and malformed,
+duplicate, oversized, mismatched or non-progressing responses fail explicitly.
+
+The input cleanup test accepts EOF or ECONNRESET after cancellation: Unix streams
+with unread partial input can legitimately reset when the owned endpoint closes.
+It still requires the cancelled future to finish promptly and the descriptor to
+be closed; no assertion or old regression was disabled. New input reads are
+bounded and do not use an uncancellable Tokio stdin worker.
+
+Audit fixes include earlier password/old-token/provider drops, terminal-only code
+display (not stdout/stderr/report), sensitive X-VC headers, absolute HTTP deadlines,
+expired-registration termination and supported RustCrypto zeroize features for
+key/hash-state cleanup. Memory erasure of all allocator, serialized, TLS or kernel
+copies is not claimed. No TLS bypass, alternate hostname, silent downgrade,
+forced session replacement or automatic authentication retry was introduced.
+
+The dry-run report was validated as mode 600 and contained only mode/last_stage/
+outcome/live_connection_verified=false. The identity path remained absent. No
+live account was explicitly supplied/approved, no password/phone approval could
+be collected safely in this API session, and **no live authentication or read
+against KakaoTalk was attempted**. authentication.md provides the owner workflow.
+No new benchmark was run; performance.md retains and qualifies prior measurements.
+
+GitHub upload was explicitly authorized with Phase 5. At the start remote main
+was ab89801 and local work was 7a2746a. A fetch and merge-base ancestor check
+confirmed remote history is preserved. Upload uses a normal fast-forward push,
+never force, and is checked against the remote HEAD after completion. Source
+upload is separate from any live-account authorization, visibility change,
+package publication or release; none of those latter actions was authorized/run.
+
+---
+
 ## Phase 4 — 2026-10-25
 
 | Check | Outcome |

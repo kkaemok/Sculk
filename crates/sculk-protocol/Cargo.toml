@@ -21,7 +21,8 @@ harness = false
 path = "../../benches/codec.rs"
 
 [features]
-experimental-gcm = ["dep:aes-gcm", "dep:rand"]
+# Explicit transitive features ensure expanded keys/hash state are cleared on drop.
+experimental-gcm = ["dep:aes-gcm", "aes-gcm/zeroize", "dep:aes", "dep:ghash", "dep:polyval", "dep:rand"]
 loco-handshake = ["experimental-gcm", "dep:rsa", "dep:sha1", "dep:zeroize"]
 
 [dependencies.aes-gcm]
@@ -49,3 +50,17 @@ name = "encryption"
 harness = false
 path = "../../benches/encryption.rs"
 required-features = ["experimental-gcm"]
+
+# Already transitive crypto primitives, listed to activate their supported cleanup.
+[dependencies.aes]
+version = "0.8"
+features = ["zeroize"]
+optional = true
+[dependencies.ghash]
+version = "0.5"
+features = ["zeroize"]
+optional = true
+[dependencies.polyval]
+version = "0.6"
+features = ["zeroize"]
+optional = true

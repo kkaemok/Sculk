@@ -1,6 +1,6 @@
 # Third-party dependencies
 
-Generated from `cargo metadata --all-features --locked` on 2026-10-25.
+Generated from `cargo metadata --all-features --locked` on 2026-10-26.
 
 No upstream SDK implementation source is vendored. References in research.md
 are not linked dependencies. This list includes dev and platform-specific

@@ -78,6 +78,7 @@ can use a caller-supplied legitimate identity via from_uuid instead.
   "email": "YOUR_OWN_ACCOUNT_EMAIL",
   "device_file": "/ABSOLUTE/PRIVATE/DIRECTORY/device.identity",
   "server_key_file": "/ABSOLUTE/PRIVATE/DIRECTORY/trusted-public.der",
+  "server_key_sha256": "OWNER_VERIFIED_64_HEX_DIGIT_SHA256",
   "tcp_proxy_host": "proxy",
   "tcp_proxy_port": 8088,
   "allowed_endpoints": [
@@ -92,7 +93,7 @@ can use a caller-supplied legitimate identity via from_uuid instead.
 }
 ```
 
-The zero ID and endpoint/path placeholders are deliberately not runnable defaults.
+The zero ID, fingerprint and endpoint/path placeholders are deliberately not runnable defaults.
 The profile values reproduce the public reference, not a guarantee of current
 acceptance. Confirm the legitimately approved profile before use. The test public
 key fixture is **not automatically chosen** or declared trusted for production.
@@ -121,7 +122,7 @@ cargo run -p sculk-auth-client --features live --locked -- --live /ABSOLUTE/conf
 
 The CLI separately requires the exact word `authorize`, prompts for the password
 without echo, and, only when -100 is returned, separately asks for `register`.
-It displays the approval code for confirmation in your legitimate app. Ctrl-C
+It displays the approval code privately on the controlling terminal for confirmation in your legitimate app. Ctrl-C
 cancels network operations. Never share the password, passcode, token or raw
 response in chat or issue reports. `--refresh` is an additional explicit option
 for a single refresh **before** LOCO connection; it is not an automatic rejection
@@ -151,3 +152,58 @@ called an authenticated LOCO session until the protocol identity check succeeds.
 The next minimal owner test is the above one-time authorization/connection only.
 After it succeeds, validate a read-only room lookup before an explicitly authorized
 single text send. No package push/publication is part of that procedure.
+
+## Phase 5 tool update — 2026-10-26
+
+The private configuration now **requires** a `server_key_sha256` string: the exact
+64 hexadecimal digits obtained from an independently trusted source for your
+actual server key. Add it beside server_key_file in the phase-4 template. Do not
+populate production configuration automatically from the synthetic-test pin.
+A missing/mismatching pin stops before password input or network authentication.
+Matching a local file's hash verifies consistency, not the key's provenance or
+current service acceptance. Profile values and routing remain unverified live.
+
+Use --dry-run as the explicit local-only mode (--check-config remains an alias):
+
+```sh
+cargo run -p sculk-auth-client --features live --locked -- --dry-run /ABSOLUTE/config.json --report /PRIVATE/new-dry-run-report.json
+```
+
+This mode was executed here with synthetic private configuration. Its report
+recorded local-validation-complete, completed, and live_connection_verified=false;
+no identity was created, password requested or network connection opened.
+Reports are new owner-only 0600 files and existing paths are never overwritten.
+They contain only mode, last_stage, outcome, and live_connection_verified; no
+secrets, raw errors/responses, personal IDs, email or room data are recorded.
+
+For an explicitly authorized owner account with verified profile, pin and routes:
+
+```sh
+cargo run -p sculk-auth-client --features live --locked -- --live /ABSOLUTE/config.json --read-only --report /PRIVATE/new-live-report.json
+```
+
+--read-only performs **one** LCHATLIST page after exact LOGINLIST account validation;
+it prints only count/eof and does not send messages, mark chats read, or moderate.
+Partial pages are not called complete room lists. No room/member content is logged.
+Drop --read-only for connection/identity validation only. Any failure is terminal:
+keep the sanitized last-stage/result and safe numeric error, investigate, and do
+not repeat login automatically. A post-login read failure can still truthfully
+record live_connection_verified=true with outcome=failed; the boolean refers
+only to the preceding successful LOGINLIST identity check.
+
+State labels and booking/checkin/loginlist stages are visible without exposing
+credential values. Separate registration consent now has a cancellable terminal
+read and 120-second limit. Approval codes are intentionally displayed only on the
+controlling /dev/tty for the human, never stdout/stderr or reports. Use an unrecorded
+local terminal; do not capture approval codes in terminal recordings/screenshots.
+Passwords are dropped as soon as the HTTP login/approval stage finishes. Old tokens
+are dropped after explicit refresh; provider/source credentials are dropped before
+LOCO setup. Primary zeroizing values are cleared, but kernel, allocator, HTTP/TLS
+and serialized-packet copies still prevent a comprehensive memory-erasure claim.
+
+**No authorized live account was supplied here.** API execution cannot safely
+collect the owner's interactive password or phone approval, and no account test
+was attempted. The procedure above is the next validation action for the owner;
+GitHub upload authorization is not live-account or device-registration consent.
+Current Android endpoint/profile acceptance, LOCO-capable credentials, key identity,
+network grants and actual device approval remain the exact live prerequisites.

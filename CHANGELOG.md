@@ -2,6 +2,15 @@
 
 ## 0.1.0 — unreleased
 
+Phase 5:
+- Audit auth/session/transport; fix cancellable consent, approval-code log routing,
+  sensitive header redaction, credential lifetimes and expired-registration handling.
+- Add required owner-verified RSA fingerprint, local dry-run, sanitized private reports,
+  visible state/stages and cancellable optional read-only validation before shutdown.
+- Add source-backed bounded room listing, metadata/member subsets and regressions.
+- Upload the local implementation to GitHub only after fast-forward ancestry checks;
+  no real account test, message send, package publication or release.
+
 Phase 4:
 - Add concrete optional Android HTTP login/approval/registration/refresh provider,
   explicit human registration gate, stable private device identity and exact account binding.

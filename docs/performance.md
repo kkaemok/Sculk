@@ -148,3 +148,23 @@ TLS/caller/library buffer copies remain outside comprehensive zeroization claims
 File I/O and terminal prompts run outside Tokio or in spawn_blocking in the
 example. The example uses a current-thread runtime. No new deployed RSS,
 real-account idle CPU, network latency or long-duration soak measurement was run.
+
+## Phase 5 readiness scope — 2026-10-26
+
+No new benchmark was run: compatibility/security readiness took priority over
+unrelated throughput work. The phase-4 encrypted in-memory sample remains
+208,743 pairs/s and the earlier limitations still apply; it is not a live-network
+or production guarantee. No compiler flags, packet-buffer optimization, protocol
+unsafe code or new per-event task was introduced.
+
+Consent input now uses readiness and cancellation instead of a blocking stdin
+worker, preventing shutdown from hanging without adding an idle polling loop.
+The CLI's state observer is one bounded watch task, and sanitized report writing
+happens after the runtime attempt. Primary credential values are released earlier.
+Read-only requests fetch one bounded page/snapshot, cap arrays/metadata strings
+and retain no automatic message history or unbounded cursor/member cache. Their
+performance and deployed RSS are unmeasured; no improvement is claimed.
+
+Supported RustCrypto key/hash-state cleanup features were enabled during the
+security audit. Their drop-time overhead is unmeasured; prior phase measurements
+are retained as historical samples and are not claimed for the changed build.

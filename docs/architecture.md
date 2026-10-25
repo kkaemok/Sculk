@@ -236,3 +236,38 @@ bounded header reads; it does not over-read tunneled bytes or fall back to direc
 TCP. Every discovered/assigned host is rechecked. Operator grants and key provenance
 remain required. The provider and integrated example contain no Android, Docker,
 Node or Python runtime dependency.
+
+## Phase 5: auditable validation CLI and read-only subset
+
+The example now has a strict mode/option parser. --dry-run (--check-config alias)
+performs local configuration, owner-private file, profile, system-root and explicit
+RSA SHA-256 pin checks, then exits without identity creation or network access.
+Live mode remains an explicit terminal-only account authorization, with a separate
+registration authorization. A required configured fingerprint binds the key file
+before any HTTP login; matching a hash does not prove real-world provenance.
+
+Registration confirmation reads the controlling terminal using a local owned
+nonblocking File registered with Tokio readiness. It has a 120-second limit and
+responds to cancellation even with partial input; no uncancellable stdin worker
+remains. The one unsafe IO registration uses Tokio's required owned-descriptor
+contract: the descriptor is never replaced/closed/exposed while registered. No
+packet/crypto parser unsafe optimization was introduced. Approval codes are only
+deliberately displayed on /dev/tty, never standard log streams or JSON reports.
+
+Provider state output uses static labels and can coalesce watch updates. Protocol
+stages are explicitly labeled booking/checkin/loginlist. --report creates a new
+0600 no-follow file containing only mode, last stage, outcome and a verified-live
+boolean. It refuses overwrite; no account ID, email, device UUID, credential,
+approval code, room content or raw error is serialized. Post-login read cancellation
+still closes the session before returning. Passwords, replaced credentials and
+unneeded provider/token-source values are dropped earlier than in phase 4.
+
+The optional read-only feature adds Session::chat_rooms, room_info and room_members.
+Room IDs are positive signed Int64, pagination tokens are opaque exact integers,
+arrays/strings are bounded and required fields/status/room binding are validated.
+Only one page is fetched at a time. eof=false requires an explicit progressing
+cursor; no complete-list claim follows from a partial page. The structs retain
+only selected source-backed fields, do not fabricate names/titles, and do not
+implement a globally stable identity assumption or automatic replay/history.
+A closed, expired or unconfirmed Session cannot issue these requests. --read-only
+in the live tool requests one LCHATLIST page and prints only count/eof, then closes.

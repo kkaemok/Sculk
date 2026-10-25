@@ -19,6 +19,8 @@ pub mod auth;
 pub mod connect;
 #[cfg(feature = "android-auth")]
 pub mod dial;
+#[cfg(feature = "read-only")]
+pub mod read_only;
 #[cfg(feature = "protocol-connect")]
 pub mod records;
 pub mod recovery;

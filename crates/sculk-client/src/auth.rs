@@ -512,10 +512,14 @@ impl Provider {
             ("accept-language", "ko".into()),
             ("x-vc", hash[..16].into()),
         ] {
+            let mut header = HeaderValue::from_str(&value).map_err(|_| Error::Config)?;
+            if name == "x-vc" {
+                header.set_sensitive(true);
+            }
             headers.insert(
                 reqwest::header::HeaderName::from_bytes(name.as_bytes())
                     .map_err(|_| Error::Config)?,
-                HeaderValue::from_str(&value).map_err(|_| Error::Config)?,
+                header,
             );
         }
         Ok(headers)
@@ -546,10 +550,19 @@ impl Provider {
             }
             serde_json::from_slice(&bytes).map_err(|_| Error::Response)
         };
-        tokio::select! {biased;
+        let deadline = Instant::now() + self.limits.request_timeout;
+        let result = tokio::select! {biased;
             _=crate::recovery::cancelled(&mut cancel)=>Err(Error::Cancelled),
-            result=tokio::time::timeout(self.limits.request_timeout,operation)=>result.unwrap_or(Err(Error::Timeout)),
+            _=tokio::time::sleep_until(deadline)=>Err(Error::Timeout),
+            result=operation=>result,
+        };
+        if *cancel.borrow() || cancel.has_changed().is_err() {
+            return Err(Error::Cancelled);
         }
+        if Instant::now() >= deadline {
+            return Err(Error::Timeout);
+        }
+        result
     }
     /// Attempt login once (or once more after server-confirmed registration).
     /// -100 only enters NeedsApproval; no passcode/registration request is sent.
@@ -628,7 +641,7 @@ impl Provider {
             let body=serde_json::json!({"email":email,"password":password,"permanent":true,"device":{"name":self.profile.device_name,"uuid":self.device_uuid(),"model":self.profile.device_name,"osVersion":self.profile.api_level}});
             let reply=self.send(self.client.post(format!("{}passcodeLogin/generate",self.base)).headers(self.headers(email)?).header("Content-Type","application/json; charset=utf-8").json(&body),cancel).await?;
             if let Some(code)=reply.status{if code!=0{return Err(Error::Rejected(code));}}
-            let code=reply.passcode.filter(|s|!s.is_empty()&&s.len()<=128&&!s.chars().any(char::is_control)).ok_or(Error::Response)?;
+            let code=reply.passcode.filter(|s|!s.is_empty()&&s.len()<=128&&s.bytes().all(|b|b.is_ascii_alphanumeric()||b==b'-')).ok_or(Error::Response)?;
             let window = reply.remaining.map(Duration::from_secs)
                 .unwrap_or(self.limits.approval_timeout).min(self.limits.approval_timeout);
             if window.is_zero() { return Err(Error::Expired); }
@@ -670,6 +683,9 @@ impl Provider {
                 match reply.status.ok_or(Error::Response)? {
                     0 => return Ok(()),
                     -100 => {
+                        if reply.remaining == Some(0) {
+                            return Err(Error::Expired);
+                        }
                         let interval = reply
                             .interval
                             .filter(|n| (1..=30).contains(n))

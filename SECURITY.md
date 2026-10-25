@@ -74,3 +74,28 @@ The CONNECT dialer must use approved proxy/network routes and exact endpoint
 allowlists. Help and check-config do not establish identity, network access or live
 compatibility. The owner must independently trust the RSA pin and approved account
 profile before interactive validation. See docs/authentication.md.
+
+## Phase 5 audit fixes
+
+Registration consent is no longer an uncancellable blocking stdin task. The CLI
+reads a bounded line from its owned nonblocking controlling terminal with a deadline
+and Ctrl-C support. The required Tokio descriptor registration has a locally
+commented ownership invariant; the descriptor is never replaced or exposed.
+Approval codes go only to the approving terminal, never stdout/stderr or reports.
+X-VC is marked sensitive in header Debug, and primary password/old-token/provider
+values are dropped earlier. Complete transport-buffer erasure remains unproven.
+
+An independently trusted SHA-256 key fingerprint is required before live account
+requests. Dry-run performs no network activity. Reports contain only static stage,
+mode/outcome and verified-live boolean, use exclusive 0600 creation with no-follow,
+and refuse overwrite. Read-only queries require an active Session and never
+fabricate missing fields, repeat pages automatically, or print personal payloads.
+No forced login, alternate-name TLS validation, automatic downgrade, challenge
+bypass, uncontrolled retry or unattended registration path was added.
+
+The crypto audit also found that optional RustCrypto zeroize features had not been
+selected. They are now explicitly enabled for AES expanded-key cleanup, GHASH/
+POLYVAL state and AES-GCM temporary key material. These are existing transitive
+primitives, not replacement cryptography. Source/feature resolution and unchanged
+known-answer/record tests verify integration; comprehensive allocator/TLS/kernel
+memory erasure is still not claimed.

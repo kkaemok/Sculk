@@ -107,3 +107,20 @@ test-account authorization and, when needed, another registration approval.
 Passwords are prompted without echo; tokens are not persisted. Read the complete
 [owner validation procedure](docs/authentication.md) before any live attempt.
 Core default features remain unchanged; the example's live feature is opt-in.
+
+## Connection validation readiness
+
+Phase 5 adds a required owner-verified `server_key_sha256` configuration value,
+`--dry-run`, sanitized private `--report`, visible state/stage labels, cancellable
+registration consent and shorter credential lifetimes. See the updated
+[owner procedure](docs/authentication.md). No authorized live login has been run.
+
+```sh
+cargo run -p sculk-auth-client --features live --locked -- --dry-run /ABSOLUTE/private/config.json --report /PRIVATE/new-report.json
+```
+
+The optional `sculk-client/read-only` feature provides one-page room listing,
+room metadata and room-member snapshots with typed IDs and strict validation.
+After separate account authorization, CLI `--live ... --read-only` checks one
+room page and prints count/eof only. This sends no messages, read marks or moderation
+commands. API behavior is offline-tested against source contracts, not live-proven.

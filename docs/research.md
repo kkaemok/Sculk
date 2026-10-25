@@ -321,3 +321,56 @@ profile, trusted key provenance, approved routes and legitimate device confirmat
 No configured Kakao secret bindings or KAKAO/SCULK credential variables were found
 by name/presence checks. No values were inspected and no live test was attempted.
 See authentication.md for the exact safe owner validation procedure.
+
+## Phase 5 readiness audit — 2026-10-26
+
+Fetched the current public refs again: Agent Messenger remains
+`9d2de96a43fe3e0e172e8e399454c475146a2697`, OpenKakao remains
+`6ca6ea2fd05a6660c4a80c0b61b43b416653d1d5`, KiwiTalk remains
+`4e565ca6bfff72f6085f1b0a4a767558c78ff450`, and node-kakao remains
+`8512e4699e2cd4c26516b80d38b57b2f85a6cc8a`. None supplies newly reproduced live
+acceptance in this environment. Existing endpoint/transport/profile differences
+and current RSA-pin provenance remain open compatibility requirements.
+
+Actual-source audit confirmed fixed HTTPS origin, ordinary TLS verification,
+no redirects/retries/forced login, explicit registration approval, bounded polls,
+Int64 account binding and zeroizing credential types. Focused fixes:
+
+- The CLI's registration spawn_blocking stdin prompt could outlive cancellation
+  and prevent runtime shutdown. It now uses bounded nonblocking terminal readiness
+  with cancellation, tested with partial input and owned-descriptor cleanup.
+- Password/email and superseded refresh credentials remained in scope during
+  protocol setup. The CLI now drops them promptly, then drops provider/credentials
+  after creating the short-lived protocol token. Serialized/TLS/kernel copies
+  remain outside comprehensive memory-erasure guarantees.
+- Approval codes went to stdout. They now go only to the controlling terminal
+  for deliberate human confirmation; sanitized reports and stdout/stderr contain
+  no code. Non-ASCII/control-bearing challenge codes are rejected.
+- X-VC was not marked sensitive in HeaderMap debug output. It is now marked
+  sensitive. Errors still retain no raw HTTP/LOCO payload or credential-bearing cause.
+- HTTP completion now checks the absolute deadline after body parsing, and an
+  expired pending registration response stops polling immediately.
+
+Read-only schemas were cross-checked against Agent's protocol/session.ts,
+node-kakao packet/chat/{lchat-list,chat-info,get-mem}.ts and packet/struct/{channel,user}.ts,
+and KiwiTalk talk/session/load_channel_list.rs and session/channel/{mod,info}.rs.
+Implemented requests are LCHATLIST with empty known chat/max arrays and explicit
+lastTokenId/lastChatId, CHATINFO with chatId, and GETMEM with chatId. Responses
+use chatDatas[].c/t/a, chatInfo.chatId/type/activeMembersCount/chatMetas, and
+members[].userId/nickName plus token. Unknown kinds remain raw; member userId
+is not conflated with an account or OpenChat profile identity.
+
+The fixture tool calls actual Agent read-only methods with all sockets replaced;
+request bytes are compared exactly in native tests. Responses are independently
+labeled synthetic schema examples, never live captures. One page/request is
+bounded; no automatic history fetch, read marking or fabricated title/member name
+exists. Missing required fields, duplicate keys, account/room mismatch, malformed
+integer IDs and non-progressing pagination fail explicitly. No new request fields
+were invented to make an unverified endpoint accept a connection.
+
+The crypto audit also found that optional RustCrypto zeroize features had not been
+selected. They are now explicitly enabled for AES expanded-key cleanup, GHASH/
+POLYVAL state and AES-GCM temporary key material. These are existing transitive
+primitives, not replacement cryptography. Source/feature resolution and unchanged
+known-answer/record tests verify integration; comprehensive allocator/TLS/kernel
+memory erasure is still not claimed.

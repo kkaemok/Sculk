@@ -758,3 +758,52 @@ async fn expired_credentials_can_refresh_once_and_cancellation_wins_ready_reply(
         Some(Error::Cancelled)
     );
 }
+
+#[test]
+fn credential_headers_and_debug_views_redact_secret_material() {
+    let p = provider("http://127.0.0.1:1/".into());
+    let headers = p.headers("owner@example.invalid").unwrap();
+    assert!(headers.get("x-vc").unwrap().is_sensitive());
+    let raw = headers.get("x-vc").unwrap().to_str().unwrap();
+    assert!(!format!("{headers:?}").contains(raw));
+    for e in [
+        Error::Transport,
+        Error::Response,
+        Error::Rejected(-100),
+        Error::Timeout,
+    ] {
+        assert!(!format!("{e:?} {e}").contains("synthetic-password"));
+    }
+}
+#[tokio::test]
+async fn expired_registration_response_stops_without_another_poll() {
+    let (base, task) = server(vec![
+        "{\"status\":-100}".into(),
+        "{\"passcode\":\"123456\"}".into(),
+        "{\"status\":-100,\"remainingSeconds\":0,\"nextRequestIntervalInSeconds\":1}".into(),
+    ])
+    .await;
+    let mut p = provider(base);
+    let (_tx, cancel) = watch::channel(false);
+    p.login(
+        "owner@example.invalid",
+        "synthetic-password",
+        cancel.clone(),
+    )
+    .await
+    .unwrap();
+    p.approve_device_registration().unwrap();
+    p.request_challenge(
+        "owner@example.invalid",
+        "synthetic-password",
+        cancel.clone(),
+    )
+    .await
+    .unwrap();
+    assert_eq!(
+        p.confirm_device("owner@example.invalid", "synthetic-password", cancel)
+            .await,
+        Err(Error::Expired)
+    );
+    assert_eq!(task.await.unwrap().len(), 3);
+}

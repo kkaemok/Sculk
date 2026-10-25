@@ -21,6 +21,7 @@ path = "../../benches/transport.rs"
 
 [features]
 default = []
+read-only = ["secure-session"]
 android-auth = ["protocol-connect", "dep:reqwest", "dep:serde", "dep:serde_json", "dep:sha2", "dep:uuid", "dep:libc", "dep:rustix", "zeroize/serde"]
 protocol-connect = ["secure-session", "sculk-protocol/loco-handshake", "dep:bytes"]
 secure-session = ["dep:tokio-rustls", "dep:webpki-roots", "dep:zeroize", "dep:bson"]

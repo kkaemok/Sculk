@@ -49,3 +49,10 @@ Regenerate with `bun tests/fixtures/tools/generate-auth.ts /path/to/pinned/refer
 Tests compare body contracts, Android headers and X-VC to this fixture. Response
 JSON in provider tests is synthetic and is deliberately encoded directly with
 an exact account number beyond 2^53; it does not pass through JavaScript Number.
+
+Phase 5 adds `agent-{lchatlist,chatinfo,getmem}-{request,response}.bin`. Requests
+come from the actual pinned Agent methods; responses are source-encoder output
+for deliberately synthetic schema examples (not live captures). IDs use exact
+BSON Long 9007199254740993. Regenerate via
+`bun tests/fixtures/tools/generate-read-only.ts /path/to/pinned/reference`.
+Native tests compare request bytes and validate returned shapes/identity/cursors.
