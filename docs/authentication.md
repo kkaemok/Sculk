@@ -231,3 +231,49 @@ was made and no compatibility claim was upgraded. The tool continues to require
 owner approval and independently trusted key/endpoint identity on a properly
 configured route. No live send flag exists; text encoding tests authorize no
 real-room message transmission.
+
+## Phase 7 single controlled receive procedure
+
+Live compatibility is still unverified. Before testing, the owner must supply an
+authorized account with known numeric identity, consistent accepted client profile,
+stable device identity, an independently verified server key/fingerprint and approved
+HTTPS/CONNECT routes for Booking, advertised CHECKIN and assigned chat endpoints.
+Do not paste passwords/tokens or private configuration into chat or commit them.
+Development has none of these prerequisites configured and did not contact an account.
+
+1. In the existing owner-private config, add numeric `test_room_id` for a quiet test
+   room the operator owns or is authorized to use. Positive Int64 IDs remain exact;
+   do not pass them through JavaScript floating-point conversions.
+2. Run the existing --dry-run procedure. It remains local/network-free and cannot
+   enable --receive-one. A successful dry run validates configuration, not service
+   access, account approval, public-key provenance or current compatibility.
+3. Run `--live CONFIG --receive-one 60 --report NEW_PRIVATE_REPORT`. Authenticate
+   only after the account approval prompt; give the separate `receive` room consent.
+   If registration is required, the existing separate approval and legitimate phone
+   confirmation remain mandatory. Rejections do not trigger another login attempt.
+4. Confirm the tool reaches Booking → CHECKIN → LOGINLIST for the configured account.
+   Wait for READY; subscription is established before that output.
+5. Send exactly one controlled text in the selected quiet room using the official
+   client. Sculk sends nothing. Other-room ordinary messages are filtered; malformed
+   or unknown events, lag, cancellation, transport closure and expiry fail validation.
+6. The first selected-room text must have valid positive log/sender IDs and a server
+   Unix timestamp within 300 seconds of local time. This is an explicit clock/freshness
+   policy, not a researched server guarantee. Room/type/ID parsing is source-backed.
+   No content matching or global sender-account identity inference is performed.
+7. The CLI reports static success and disconnects. Its report adds only
+   `controlled_receive_verified`; it records no body, room, sender, account or log ID.
+   A passed run proves this one owner's observed path, not universal compatibility.
+
+--receive-one accepts 1..300 seconds and is mutually exclusive with --listen.
+Default timeouts and the local session lease still apply; a long window may expire
+rather than silently refresh/reconnect. Ctrl-C cancels the operation and closes the
+session. This validation mode does not load history, run recovery loops, mark read,
+send a message or perform moderation. A quiet room and operator control are needed
+because the first matching fresh text is not cryptographically tied to an external
+content challenge. No private content is printed for correlation.
+
+SDK recovery uses only already-approved, still-valid credentials supplied through
+an explicit connector. It does not re-run password acquisition/device approval,
+rotate identities or force device replacement. Expired/rejected credentials and
+ambiguous LOGINLIST timeouts require intervention; a coordinator with a permanent
+failure cannot be restarted silently. See recovery.md for processing boundaries.

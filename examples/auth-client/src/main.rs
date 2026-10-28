@@ -35,6 +35,7 @@ struct Configuration {
     os_version: String,
     api_level: String,
     device_name: String,
+    test_room_id: Option<i64>,
 }
 #[derive(Deserialize)]
 #[serde(deny_unknown_fields)]
@@ -54,6 +55,7 @@ struct Arguments {
     refresh: bool,
     read_only: bool,
     listen: Option<u64>,
+    receive_one: Option<u64>,
     report: Option<PathBuf>,
 }
 impl Arguments {
@@ -64,6 +66,7 @@ impl Arguments {
             refresh: false,
             read_only: false,
             listen: None,
+            receive_one: None,
             report: None,
         };
         if args.is_empty() || args == ["--help"] {
@@ -87,11 +90,13 @@ impl Arguments {
                 "--read-only" if result.mode == Mode::Live && !result.read_only => {
                     result.read_only = true
                 }
-                "--listen"
+                "--listen" | "--receive-one"
                     if result.mode == Mode::Live
                         && result.listen.is_none()
+                        && result.receive_one.is_none()
                         && index + 1 < args.len() =>
                 {
+                    let receive_one = args[index] == "--receive-one";
                     index += 1;
                     let seconds = args[index]
                         .parse::<u64>()
@@ -99,7 +104,11 @@ impl Arguments {
                     if !(1..=300).contains(&seconds) {
                         return Err(fail("listen duration must be 1..300 seconds"));
                     }
-                    result.listen = Some(seconds);
+                    if receive_one {
+                        result.receive_one = Some(seconds);
+                    } else {
+                        result.listen = Some(seconds);
+                    }
                 }
                 "--report" if result.report.is_none() && index + 1 < args.len() => {
                     index += 1;
@@ -119,6 +128,7 @@ struct Report {
     outcome: &'static str,
     failure_category: Option<&'static str>,
     live_connection_verified: bool,
+    controlled_receive_verified: bool,
 }
 // Only typed, static categories enter reports. Never format raw error/source text.
 fn failure_category(error: &Failure) -> &'static str {
@@ -138,7 +148,7 @@ fn failure_category(error: &Failure) -> &'static str {
     if let Some(error) = error.downcast_ref::<sculk_client::connect::Error>() {
         use sculk_client::connect::Error::*;
         return match error {
-            Dial(_) => "dial-or-policy",
+            Dial(_) | DialIo(_, _) => "dial-or-policy",
             Transport(_, _) => "loco-transport",
             Response(_) => "invalid-loco-response",
             Rejected(_, _) => "server-rejected",
@@ -220,6 +230,17 @@ fn state_name(state: &auth::State) -> &'static str {
         Failed(_) => "failed",
     }
 }
+fn valid_controlled_message(
+    message: &sculk_client::messaging::Message,
+    room: sculk_client::read_only::RoomId,
+    now: u64,
+) -> bool {
+    message.room == room
+        && message.id.get() > 0
+        && message.sender.get() > 0
+        && message.kind == sculk_client::messaging::MessageType::Text
+        && u64::try_from(message.sent_at_seconds).is_ok_and(|sent| sent.abs_diff(now) <= 300)
+}
 fn main() {
     if let Err(error) = run() {
         eprintln!("{error}");
@@ -229,12 +250,13 @@ fn main() {
 fn run() -> Result<(), Failure> {
     let args = Arguments::parse(&std::env::args().skip(1).collect::<Vec<_>>())?;
     if args.mode == Mode::Help {
-        println!("Sculk experimental connection validation\n--dry-run PATH [--report NEW_PATH]: local config/key checks only; no network\n--check-config is an alias for --dry-run\n--live PATH [--refresh] [--read-only] [--listen SECONDS] [--report NEW_PATH]: explicitly authorized account only\nLive mode requires a terminal, account approval, and separate device-registration approval.\n--read-only requests one LCHATLIST page; --listen 1..300 receives events and prints counts only. No messages, read marks or moderation operations are sent.\nReports contain only mode/stage/outcome and never secrets, IDs or approval codes.");
+        println!("Sculk experimental connection validation\n--dry-run PATH [--report NEW_PATH]: local config/key checks only; no network\n--check-config is an alias for --dry-run\n--live PATH [--refresh] [--read-only] [--listen SECONDS | --receive-one SECONDS] [--report NEW_PATH]: explicitly authorized account only\nLive mode requires a terminal, account approval, and separate device-registration approval.\n--receive-one requires configured test_room_id and separate room consent; validates one fresh text without logging content or IDs.\n--read-only requests one LCHATLIST page; --listen 1..300 receives events and prints counts only. No messages, read marks or moderation operations are sent.\nReports contain only mode/stage/outcome and never secrets, IDs or approval codes.");
         return Ok(());
     }
     let stage = Cell::new("configuration");
     let verified = Cell::new(false);
-    let result = attempt(&args, &stage, &verified);
+    let received = Cell::new(false);
+    let result = attempt(&args, &stage, &verified, &received);
     if let Some(path) = &args.report {
         write_report(
             path,
@@ -251,6 +273,7 @@ fn run() -> Result<(), Failure> {
                     "failed"
                 },
                 live_connection_verified: verified.get(),
+                controlled_receive_verified: received.get(),
                 failure_category: result.as_ref().err().map(failure_category),
             },
         )?;
@@ -267,6 +290,7 @@ fn attempt(
     args: &Arguments,
     stage: &Cell<&'static str>,
     verified: &Cell<bool>,
+    received: &Cell<bool>,
 ) -> Result<(), Failure> {
     let bytes = auth::read_private_file(
         args.config
@@ -285,6 +309,17 @@ fn attempt(
     {
         return Err(fail("invalid configured account"));
     }
+    if config.test_room_id.is_some_and(|id| id <= 0)
+        || (args.receive_one.is_some() && config.test_room_id.is_none())
+    {
+        return Err(fail(
+            "receive-one requires a positive configured test_room_id",
+        ));
+    }
+    let test_room = config
+        .test_room_id
+        .map(sculk_client::read_only::RoomId::new)
+        .transpose()?;
     let profile = AndroidProfile {
         app_version: config.app_version,
         os_version: config.os_version,
@@ -332,6 +367,9 @@ fn attempt(
     }
     stage.set("account-authorization");
     if !ask("Authorize this configured test account for experimental authentication and connection? No messages or moderation operations will be sent.","authorize"){return Err(fail("test-account authorization not granted; no network request"));}
+    if args.receive_one.is_some() && !ask("Authorize receive-only validation in the configured test room you own or have permission to test?", "receive") {
+        return Err(fail("test-room authorization not granted; no network request"));
+    }
     stage.set("device-identity");
     let identity = DeviceIdentity::load_or_create(&config.device_file)?;
     let password = Zeroizing::new(
@@ -382,6 +420,25 @@ fn attempt(
                     }}
                     println!("Receive window complete: messages={messages}; unknown={unknown}; malformed={malformed}. No content or identities recorded.");
                 }
+                if let Some(seconds)=args.receive_one {
+                    stage.set("controlled-receive");
+                    let room=test_room.ok_or_else(||fail("missing authorized test room"))?;
+                    let mut events=session.message_events()?;
+                    println!("READY: send one controlled text in the authorized room using the official client. No content or identifiers will be printed.");
+                    let deadline=tokio::time::Instant::now()+Duration::from_secs(seconds);
+                    loop {tokio::select!{biased;
+                        _=tokio::time::sleep_until(deadline)=>return Err(fail("controlled receive timed out")),
+                        event=events.recv(cancel.clone())=>match event? {
+                            MessageEvent::Message(message) if message.room==room=>{
+                                let now=std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).map_err(|_|fail("system clock unavailable"))?.as_secs();
+                                if !valid_controlled_message(&message,room,now) {return Err(fail("controlled message failed room, ID, timestamp or type validation"));}
+                                received.set(true);println!("Controlled receive passed: room, log ID, sender ID, timestamp and text type validated. No content or identities recorded.");break;
+                            },
+                            MessageEvent::Message(_)=>{},
+                            MessageEvent::Unknown(_)|MessageEvent::Malformed(_)=>return Err(fail("unsupported event during controlled validation")),
+                        }
+                    }}
+                }
                 Ok::<(),Failure>(())};
             let mut read_cancel=cancel.clone();
             let read=tokio::select!{biased;_=ui::cancelled(&mut read_cancel)=>Err(fail("post-login validation cancelled")),result=operation=>result};
@@ -403,6 +460,14 @@ mod tests {
         assert!(a(&["--live", "config", "--read-only", "--report", "report.json"]).is_ok());
         assert!(a(&["--check-config", "config"]).unwrap().mode == Mode::DryRun);
         assert!(a(&["--dry-run", "config", "--listen", "10"]).is_err());
+        assert!(a(&["--dry-run", "config", "--receive-one", "10"]).is_err());
+        assert!(a(&["--live", "config", "--receive-one", "10", "--listen", "10"]).is_err());
+        assert_eq!(
+            a(&["--live", "config", "--receive-one", "10"])
+                .unwrap()
+                .receive_one,
+            Some(10)
+        );
         for invalid in ["0", "301", "-1", "text"] {
             assert!(a(&["--live", "config", "--listen", invalid]).is_err());
         }
@@ -422,12 +487,41 @@ mod tests {
             last_stage: "key-identity",
             outcome: "failed",
             live_connection_verified: false,
+            controlled_receive_verified: false,
             failure_category: Some("server-rejected"),
         })
         .unwrap();
         for secret in ["token", "password", "approval", "userId", "email"] {
             assert!(!report.contains(secret));
         }
+    }
+    #[test]
+    fn controlled_receive_checks_selected_room_freshness_and_type_without_content_matching() {
+        use sculk_protocol::{Command, Packet};
+        let room = sculk_client::read_only::RoomId::new(42).unwrap();
+        let raw = include_bytes!("../../../tests/fixtures/node-msg-synthetic.bin");
+        let packet = Packet::from_bytes(
+            0,
+            0,
+            Command::new("MSG").unwrap(),
+            raw[22..].to_vec().into(),
+        )
+        .unwrap();
+        let mut doc = packet.document().unwrap();
+        doc.insert("chatId", 42_i64);
+        doc.remove("logId");
+        doc.get_document_mut("chatLog")
+            .unwrap()
+            .insert("chatId", 42_i64);
+        let packet = Packet::from_document(0, Command::new("MSG").unwrap(), &doc).unwrap();
+        let message = sculk_client::messaging::Message::from_packet(packet).unwrap();
+        assert!(valid_controlled_message(&message, room, 1700000000));
+        assert!(!valid_controlled_message(&message, room, 1700001000));
+        assert!(!valid_controlled_message(
+            &message,
+            sculk_client::read_only::RoomId::new(43).unwrap(),
+            1700000000
+        ));
     }
     #[test]
     fn diagnostic_categories_never_include_remote_content() {

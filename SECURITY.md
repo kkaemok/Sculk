@@ -132,3 +132,41 @@ expiry, interruption and invalid acknowledgments never trigger a resend. A valid
 WRITE acknowledgment is not recipient delivery, a read receipt or exactly-once
 proof. The owner receive-only window records counts, while reports add static
 failure categories; raw message/HTTP errors and personal content are not serialized.
+
+## Phase 7 review
+
+Repeated cargo-audit with the same current database snapshot: the root lockfile
+still reports RUSTSEC-2023-0071 in rsa 0.9.10, no patched version and no suppression.
+The separately locked synchronization/framing fuzz harness reports zero advisories.
+Production `ServerKey` imports RsaPublicKey, parses public DER and calls OAEP public
+key encrypt only. RsaPrivateKey/OAEP decrypt occurrences are in local synthetic
+integration peers and `auth/tests.rs`, which is gated by `#[cfg(test)]`. The runtime
+AES-GCM decrypt path is symmetric record authentication, not RSA private-key
+operation. No deployed RSA private-key decrypt/sign service is exposed by Sculk.
+
+Available mitigations remain: keep private RSA operations out of the deployed
+runtime, track a maintained upstream fix, and use a separately verified compatible
+TLS-only route if the actual profile supports one. Do not switch transport blindly,
+replace protocol cryptography, suppress the advisory or disable certificate checks
+for a clean report. Root Cargo.lock/dependency versions were not changed.
+
+Reconnect retains only one owned session, uses typed non-sensitive I/O kinds,
+limits retries, latches permanent authentication/security failures and requires
+intervention on credential expiry. It never wraps WRITE in operation replay.
+Cancellation drops pending attempt/request state and interrupts bounded graceful
+close; explicit shutdown now sends TLS close_notify without flushing failed writes.
+No automatic HTTP password/device approval, token refresh or identity rotation
+was added. Existing memory-only zeroizing credential storage and its transport/
+serialized-buffer cleanup limitations still apply.
+
+Optional checkpoint files contain private room/cursor metadata, no tokens or message
+content. A trusted owner-private directory, exclusive lock, no-follow/nonblocking
+read, file ownership/mode/type/link/size checks, CAS boundary and atomic fsync/rename
+prevent silently reusing unsafe/stale state. A post-rename fsync error poisons the
+store. Crash-stale lock/temp files are an explicit operational recovery step;
+there is no automatic takeover or exactly-once transaction with application effects.
+
+The receive-one CLI requires separate selected-room consent, validates fresh text
+metadata, logs no content or IDs and records only a boolean outcome. It sends no
+message/read/moderation command. Unsupported events, lag and expiry fail validation;
+a first matching message cannot establish global session/history compatibility.

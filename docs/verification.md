@@ -311,3 +311,152 @@ custom cryptography, TLS bypass or test weakening was introduced.
 
 `cargo audit --file fuzz/Cargo.lock --json` passed: zero advisories and no
 informational warnings for the separately locked messaging/framing fuzz harness.
+
+## Phase 7 — 2026-10-28 (Asia/Seoul)
+
+Base `6476179206f7e458cd128ad6633a80768e54e3b5`; clean existing checkout preserved.
+The unchanged all-feature baseline passed **95 tests before modifications**.
+No project recreation, protocol rewrite, dependency upgrade, disabled assertion,
+ignored test or weakened security check was used to obtain passing results.
+
+| Check | Result |
+|---|---|
+| `cargo fmt --all -- --check` | Passed; fuzz manifest formatted separately |
+| `cargo clippy --workspace --all-targets --all-features --locked -- -D warnings` | Passed |
+| `cargo test --workspace --all-features --locked` | **111 passed**, none failed/ignored/filtered |
+| `cargo test --workspace --locked` | **23 passed**, none failed/ignored/filtered |
+| `cargo test -p sculk-client --features synchronization --test synchronization --locked` | **7 passed**, isolated optional feature |
+| `cargo test -p sculk-client --features checkpoint-file --test checkpoint --locked` | **2 passed**, isolated optional feature |
+| `cargo build --workspace --release --all-features --locked` | Passed |
+| `RUSTDOCFLAGS='-D warnings' cargo doc --workspace --all-features --no-deps --locked` | Passed |
+| `cargo run -p sculk-auth-client --features live --locked -- --help` | Passed, no account/configuration/network operation |
+| `cargo bench -p sculk-client --all-features --bench reliability --bench events --locked` | Completed; parsing, dedup, state, jitter/local TLS lifecycle and isolated total RSS results in performance.md |
+| `cargo +nightly fuzz run decode -- -max_total_time=30 -rss_limit_mb=512` | **847,438 runs in 31 seconds**, no crash; framing, MSG/raw-view access and SYNCMSG parsing |
+| `cargo audit --json` | Nonzero: one existing RUSTSEC-2023-0071/rsa 0.9.10 advisory; no patched version listed, no warnings/suppressions |
+| `cargo audit --file fuzz/Cargo.lock --json` | Passed: zero advisories/warnings |
+| `git diff --check` | Passed |
+
+New behavioral coverage includes same-ID duplicates/conflicting records, equal
+message timestamps with distinct large Int64 IDs, out-of-order history and live
+messages, genuine server-returned previously unprocessed logs, predecessor gaps,
+truncation/minimum history, unsupported schemas, wrong-room/range/type/duplicate-key
+corruption, empty nonprogressing pages and incomplete upper anchors. Processing
+tests exercise ordered acknowledgment, store failure, cancellation and partial
+restart without advancing the last safe checkpoint prematurely. Bounded recent-ID
+expiry returns OlderUntracked rather than falsely dropping a message as duplicate.
+
+Local TLS integration covers subscription before catch-up, live/history overlap,
+unknown packets, slow consumers and explicit queue overflow, partial sync interrupted
+by disconnection, bounded transient reconnect, rejection/verification/policy/ambiguous
+login timeout as terminal, cancelled attempts with dropped guards, shutdown with an
+unanswered request, expiry intervention and a source-backed PING. Explicit shutdown
+initially exposed missing TLS close_notify; the driver now performs bounded,
+cancellable graceful close only for explicit disconnect. Failed-write/abort paths
+still drop without an implicit flush/replay. Assertions were retained.
+
+Checkpoint-file tests exercise exclusive single writer, exact large-ID reopening,
+0600 file modes, CAS/backward-boundary rejection, corrupt/unsafe/symlink/stale-file
+refusal and lock cleanup after failed open. Disk checkpoints do not transact with
+application side effects. Crash durability after fsync failure/host power loss,
+long-duration leak/soak tests and exactly-once effects are not claimed.
+
+The receive-one CLI tests verify live-only/mutually exclusive flags and selected
+room/timestamp validation using synthetic messages. The procedure in authentication.md
+requires account consent, separate test-room consent and legitimate phone approval
+when needed. Reports contain only static labels/booleans. No message body, personal
+identifier, account secret, live login, registration, refresh, message send, read
+mark or moderation operation was exercised against KakaoTalk.
+
+Research refreshed Agent Messenger/node-kakao unchanged HEADs, executed the actual
+source syncMessages builder with a no-network replacement, and reviewed documented
+SYNCMSG/minLogId/isOK and CHATINFO watermark behavior. Replies are explicitly
+synthetic. Numerical IDs are not assumed contiguous; timestamps are not keys.
+A completed bounded server window is not global, lossless control-event replay.
+
+Security review confirms RSA private-key operations occur only in synthetic test
+peers (including cfg(test)-gated auth/tests.rs). Production ServerKey parses a
+public key and encrypts; normal AES-GCM decryption is not RSA private-key decryption.
+The RustSec database is `99670cfc0bc574433034b75876a4b791ccaa2efb` (updated
+2026-10-27), as in Phase 6. Root/fuzz lockfiles and runtime dependency versions did
+not change. No advisory ignore, custom cryptography or certificate bypass was added.
+
+Live readiness: the **software procedure is prepared and offline-tested**, but this
+environment is **not ready for a live account test**. It has no configured account
+credentials/approval, owner-selected verified server key/profile configuration or
+Kakao HTTP/raw-TCP grants. The enforced network snapshot contains no Kakao HTTP
+destination and raw TCP domains/IP ranges are empty. Acceptance of the researched
+Android endpoints/profile, legitimate device approval, public-key identity, actual
+transport selection, token lease and server-assigned endpoint schemas remain live
+compatibility blockers. No secrets were requested in chat or inferred from fixtures.
+
+The next smallest milestone is one owner-observed selected-room login/receive-only
+run. After its sanitized metadata evidence, validate a bounded read-only history
+window and one controlled connection-loss/reconnect with acknowledgment/dedup checks
+before relying on recovery for a moderation consumer. Live sends and moderation
+remain separately unauthorized/unsupported; no WRITE retry was introduced.
+
+Completed work is committed locally only. Phase 6's earlier push authorization was
+for that delivered phase; no Phase 7 remote push, release, crate publication or
+repository visibility change was performed.
+
+Changed files:
+
+- `CHANGELOG.md`
+
+- `README.md`
+
+- `SECURITY.md`
+
+- `benches/events.rs`
+
+- `benches/reliability.rs`
+
+- `crates/sculk-client/Cargo.toml`
+
+- `crates/sculk-client/src/checkpoint.rs`
+
+- `crates/sculk-client/src/connect.rs`
+
+- `crates/sculk-client/src/lib.rs`
+
+- `crates/sculk-client/src/managed.rs`
+
+- `crates/sculk-client/src/messaging.rs`
+
+- `crates/sculk-client/src/synchronization.rs`
+
+- `crates/sculk-client/tests/checkpoint.rs`
+
+- `crates/sculk-client/tests/managed.rs`
+
+- `crates/sculk-client/tests/synchronization.rs`
+
+- `docs/architecture.md`
+
+- `docs/authentication.md`
+
+- `docs/compatibility.md`
+
+- `docs/messaging.md`
+
+- `docs/performance.md`
+
+- `docs/recovery.md`
+
+- `docs/research.md`
+
+- `docs/verification.md`
+
+- `examples/auth-client/src/main.rs`
+
+- `fuzz/Cargo.toml`
+
+- `fuzz/fuzz_targets/decode.rs`
+
+- `tests/fixtures/README.md`
+
+- `tests/fixtures/agent-syncmsg-request.bin`
+
+- `tests/fixtures/node-syncmsg-synthetic.bin`
+
+- `tests/fixtures/tools/generate-messaging.cjs`

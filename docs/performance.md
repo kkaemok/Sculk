@@ -206,3 +206,53 @@ new default. The compatible 64-slot default remains; small hosts should explicit
 budget smaller event/request capacities (for example, 8 slots) and handle Lagged
 before relying on continuity. Larger queues cannot substitute for synchronization.
 No idle CPU, target 1 GiB RSS, soak, bot stability or live performance claim is made.
+
+## Phase 7 parsing, state and total RSS — 2026-10-28
+
+Reproduce with `cargo bench -p sculk-client --all-features --bench reliability
+--bench events --locked`. Stable Rust 1.99.1, ordinary Cargo release profile,
+x86-64 managed Linux host. This environment reports 3 available logical CPUs;
+its cgroup limits are 2 CPU equivalents / 8 GiB, **not** the Oracle target's
+1/8 OCPU / 1 GiB. No target-hardware or production-bot claim follows.
+
+| Workload | Single sample | Included work |
+|---|---:|---|
+| Typed 512-byte-text MSG parse | 2,194.5 ns/message | 100,000 iterations; shared packet clone/drop, raw BSON fields and typed validation |
+| Duplicate lookup, 128 recent IDs | 11.0 ns/lookup | 100,000 real hash-set lookups; input/receiver black-boxed; not the cursor-equality shortcut |
+| State processing acknowledgment | 260.9 ns/log | 10,000 pre-parsed sequential records; bounded set/deque, predecessor validation and MemoryStore CAS; no disk fsync |
+| Sync page, 20 × 512-byte text | 33,308.1 ns/page | 10,000 parses, room/range validation, zero-copy views, sort/dedup; no network or application handler |
+| Successful retry wrapper | 163.9 ns/attempt | 1,000 immediate successes, policy/cancellation bookkeeping; no handshake or backoff |
+| One transient retry with 0..1 ms full jitter | 1,634.9 us/cycle | 100 two-attempt cycles; includes the intentional delay and Tokio timer granularity |
+| Local TLS session setup/cleanup | 414.1 us/session | 100 iterations including ephemeral cert generation, real rustls handshake, driver/lease monitor, synthetic grant and manager lifecycle; no HTTP/GETCONF/CHECKIN/LOGINLIST or real RTT |
+
+Event-ring cases each run in a separate child process, send 2,048 synthetic MSG
+packets through the real driver, then use a PING barrier before measurement.
+Linux `/proc/self/smaps_rollup` supplies total process RSS snapshots; these include
+Tokio, the in-memory producer/mock peer, framing and allocator buffers. They are
+neither payload-only estimates nor an authenticated SDK-only/idle measurement.
+This is a single release-build sample with identical workload shape across cases;
+no before/after improvement, peak-RSS or statistical tail-latency claim is made.
+
+| Capacity | Text bytes | Logical retained body bytes | Baseline RSS KiB | RSS at retention KiB | After drain KiB | Packet/s |
+|---:|---:|---:|---:|---:|---:|---:|
+| 8 | 512 | 4,928 | 1,884 | 2,088 | 2,088 | 1,314,931 |
+| 16 | 512 | 9,856 | 1,820 | 2,096 | 2,096 | 1,057,311 |
+| 32 | 512 | 19,712 | 1,888 | 2,104 | 2,104 | 1,269,452 |
+| 8 | 2,048 | 17,216 | 1,804 | 2,092 | 2,092 | 1,076,302 |
+| 16 | 2,048 | 34,432 | 1,884 | 2,184 | 2,184 | 1,081,220 |
+| 32 | 2,048 | 68,864 | 1,820 | 2,224 | 2,224 | 1,060,649 |
+| 8 | 16,384 | 131,904 | 1,824 | 2,584 | 2,552 | 369,404 |
+| 16 | 16,384 | 263,808 | 1,884 | 2,748 | 2,748 | 373,060 |
+| 32 | 16,384 | 527,616 | 1,928 | 3,188 | 3,188 | 311,671 |
+
+Stalled receivers reported exact overwritten counts: 2,040/2,032/2,016 for
+8/16/32 slots. At 16 KiB text, retained process RSS was about 2.52/2.68/3.11 MiB;
+it does not scale solely with body bytes because backing/read buffers and allocator
+residency contribute. After-drain RSS need not return to baseline. Shared packet
+views and one active history page do not add an unbounded content cache.
+
+These results motivate explicit capacity budgets and lag handling, not a new default.
+The compatible 64-slot default remains. Real TLS/GCM/authentication buffers, disk
+checkpoint fsync, live traffic, callback costs, long-lived fragmentation, reconnect
+storms and multi-room history are outside these samples. The 1 GiB / 1/8 OCPU
+hardware target, idle CPU, soak stability and live latency remain unmeasured.

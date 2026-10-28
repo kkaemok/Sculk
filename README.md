@@ -155,3 +155,30 @@ cargo run -p sculk-auth-client --features live --locked -- --live /ABSOLUTE/priv
 
 The receive window prints counts only. See [messaging](docs/messaging.md) for API
 usage, supported schemas, delivery limits and the next live validation step.
+
+## Phase 7 synchronization and recovery
+
+Optional features now add bounded forward SYNCMSG pages, CHATINFO watermarks,
+per-room recent-ID deduplication, explicit gap evidence and acknowledgment-based
+checkpoints. `session-recovery` owns one connection, resubscribes before catch-up
+and uses bounded jittered retries for classified transient failures. Authentication
+rejection/verification failures and ambiguous login timeouts are terminal. No WRITE
+is replayed. Optional `checkpoint-file` adds a private Unix file without a database.
+
+Live reception is best-effort; acknowledged replay within supported retained history
+can provide at-least-once attempts. Neither deduplication nor file checkpoints make
+application side effects exactly-once. History truncation, unknown control events,
+older IDs outside the dedup window and queue lag remain explicit limitations.
+
+```sh
+cargo test -p sculk-client --all-features --test synchronization --test managed --test checkpoint --locked
+cargo bench -p sculk-client --all-features --bench reliability --bench events --locked
+# After private configuration and explicit account/test-room authorization:
+cargo run -p sculk-auth-client --features live --locked -- --live /ABSOLUTE/private/config.json --receive-one 60 --report /ABSOLUTE/private/new-report.json
+```
+
+The selected room is configured as optional numeric `test_room_id`. The CLI prints
+READY before the operator sends one controlled text using the official client.
+It validates IDs/room/time/type without printing content or identifiers, then closes.
+No live account test was performed in development. See [recovery](docs/recovery.md),
+[owner procedure](docs/authentication.md) and [verification](docs/verification.md).

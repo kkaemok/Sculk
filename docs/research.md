@@ -407,3 +407,45 @@ text with no NUL) are resource/input bounds, not claims about server limits.
 Missing optional message content/attachment stays None; unknown attachment JSON
 is preserved as text. Duplicated top/log keys, floating-point IDs, invalid required
 fields and conflicting echoes fail typed parsing but retain the raw packet.
+
+## Phase 7 synchronization and recovery — 2026-10-28 (Asia/Seoul)
+
+Refetched Agent Messenger (`9d2de96a43fe3e0e172e8e399454c475146a2697`,
+2026-10-20) and node-kakao (`8512e4699e2cd4c26516b80d38b57b2f85a6cc8a`,
+2023-11-01). HEADs are unchanged. Repository origin main matched Phase 6 base
+`6476179206f7e458cd128ad6633a80768e54e3b5`. Research is public-source evidence,
+not independent current account acceptance or a live capture.
+
+| Exact source | Finding and Sculk decision |
+|---|---|
+| [Agent session.syncMessages/getChatLogs](https://github.com/agent-messenger/agent-messenger/blob/9d2de96a43fe3e0e172e8e399454c475146a2697/src/platforms/kakaotalk/protocol/session.ts) | SYNCMSG `{chatId,cur,cnt,max}` and MCHATLOGS `{chatIds,sinces}`. Implement only finite SYNCMSG pages with an observed upper watermark; no automatic MCHATLOGS fallback. |
+| [node-kakao syncChatList/getChatListFrom](https://github.com/storycraft/node-kakao/blob/8512e4699e2cd4c26516b80d38b57b2f85a6cc8a/src/talk/channel/talk-channel-session.ts) | Forward SYNCMSG sets cur to returned last log ID, uses explicit endLogId, and stops on isOK. Its cnt=0 is commented unknown; Sculk instead uses Agent's positive count profile and rejects pages exceeding the local bound. |
+| [node-kakao SyncMsgRes](https://github.com/storycraft/node-kakao/blob/8512e4699e2cd4c26516b80d38b57b2f85a6cc8a/src/packet/chat/sync-msg.ts) | isOK=false means more chats; chatLogs is optional; minLogId is minimum requestable log. lastTokenId/jsi/li remain opaque metadata, not timestamps or fabricated cursors. |
+| [node-kakao MChatlogsRes](https://github.com/storycraft/node-kakao/blob/8512e4699e2cd4c26516b80d38b57b2f85a6cc8a/src/packet/chat/mchatlogs.ts) | Older response exposes only chatLogs, no authoritative completion flag or request count. Researched but not exposed by Sculk in this phase. |
+| [Agent getMessagePage/buildMessagePage](https://github.com/agent-messenger/agent-messenger/blob/9d2de96a43fe3e0e172e8e399454c475146a2697/src/platforms/kakaotalk/client.ts) | Uses read-only CHATINFO.lastLogId, filters IDs after cur, sorts/deduplicates, and keeps the oldest forward page. It explicitly avoids CHATONROOM because entering can advance unread state. Sculk also avoids it, requires room binding, rejects conflicting duplicate records and never discards an oversized remainder silently. |
+| [node-kakao ChatlogStruct](https://github.com/storycraft/node-kakao/blob/8512e4699e2cd4c26516b80d38b57b2f85a6cc8a/src/packet/struct/chat.ts) | logId and prevId are distinct; prevId=0 is first chat. There is no evidence that log IDs are contiguous. Sculk uses source predecessor evidence and server history, never ID+1/timestamp uniqueness assumptions. |
+| Agent ensureSession/executeWithReconnect in the same client | Concurrent initialization guard prevents duplicate LOGINLIST/session self-eviction. Its operation-level retry is not copied: Sculk reconnects only an owned disconnected session and never replays arbitrary operations/WRITE. |
+| Agent session.startPing | PING uses an empty document on a timer. Sculk adds a single bounded heartbeat operation; scheduling stays explicit and adds no background task. |
+
+The fixture generator now executes the actual pinned syncMessages method with a
+no-network connection replacement, producing agent-syncmsg-request.bin. The
+node-syncmsg-synthetic.bin reply uses fictional ChatlogStructs and the original
+packet encoder. No third-party authentication, socket or live test was executed.
+
+Android provider review: fixed `https://katalk.kakao.com/android/account/` login,
+passcodeLogin/generate, passcodeLogin/registerDevice and oauth2_token.json routes,
+Android A/User-Agent/X-VC/device fields, explicit phone approval, forced=false,
+no redirects/retries and account/device-bound tokens still follow the pinned Agent
+profile. Its public example uses app 25.9.2 / Android 13 / API 33; those constants
+are not proof of current profile acceptance. Sculk requires caller-selected
+consistent metadata and does not rotate identity or force an occupied device slot.
+The owner CLI still verifies a supplied RSA fingerprint before authentication.
+
+Unverified assumptions remain endpoint availability, accepted app/sub-device
+profile, legitimate approval behavior, independently trusted current RSA identity,
+server TLS identities, GCM-versus-TLS route selection for Checkin/chat, token lease
+semantics, LOGINLIST/sync field acceptance and assigned endpoint allowlists. The
+existing GETCONF → CHECKIN → LOGINLIST path retains explicit protection and exact
+allowlist checks; it never guesses fallback hosts or substitutes certificate names.
+No credentials/account approval/key configuration or permitted Kakao route is
+available here. All source-shaped success remains offline evidence only.

@@ -77,7 +77,7 @@ impl From<i32> for MessageType {
 #[error("invalid message event")]
 pub struct InvalidMessage;
 
-fn fields(doc: &RawDocument) -> Result<(), InvalidMessage> {
+pub(crate) fn fields(doc: &RawDocument) -> Result<(), InvalidMessage> {
     let mut keys = std::collections::HashSet::new();
     for field in doc.iter() {
         let (key, _) = field.map_err(|_| InvalidMessage)?;
@@ -87,17 +87,23 @@ fn fields(doc: &RawDocument) -> Result<(), InvalidMessage> {
     }
     Ok(())
 }
-fn value<'a>(doc: &'a RawDocument, key: &str) -> Result<Option<RawBsonRef<'a>>, InvalidMessage> {
+pub(crate) fn value<'a>(
+    doc: &'a RawDocument,
+    key: &str,
+) -> Result<Option<RawBsonRef<'a>>, InvalidMessage> {
     doc.get(key).map_err(|_| InvalidMessage)
 }
-fn integer(doc: &RawDocument, key: &str) -> Result<i64, InvalidMessage> {
+pub(crate) fn integer(doc: &RawDocument, key: &str) -> Result<i64, InvalidMessage> {
     match value(doc, key)? {
         Some(RawBsonRef::Int32(n)) => Ok(i64::from(n)),
         Some(RawBsonRef::Int64(n)) => Ok(n),
         _ => Err(InvalidMessage),
     }
 }
-fn string<'a>(doc: &'a RawDocument, key: &str) -> Result<Option<&'a str>, InvalidMessage> {
+pub(crate) fn string<'a>(
+    doc: &'a RawDocument,
+    key: &str,
+) -> Result<Option<&'a str>, InvalidMessage> {
     match value(doc, key)? {
         None => Ok(None),
         Some(RawBsonRef::String(s)) => Ok(Some(s)),
@@ -111,7 +117,7 @@ fn optional_bool(doc: &RawDocument, key: &str) -> Result<Option<bool>, InvalidMe
         _ => Err(InvalidMessage),
     }
 }
-fn body(packet: &Packet) -> Result<&RawDocument, InvalidMessage> {
+pub(crate) fn body(packet: &Packet) -> Result<&RawDocument, InvalidMessage> {
     RawDocument::from_bytes(packet.body()).map_err(|_| InvalidMessage)
 }
 fn chat_log(doc: &RawDocument) -> Result<&RawDocument, InvalidMessage> {
@@ -126,6 +132,7 @@ fn chat_log(doc: &RawDocument) -> Result<&RawDocument, InvalidMessage> {
 #[derive(Clone, Debug)]
 pub struct Message {
     packet: Packet,
+    log_range: std::ops::Range<usize>,
     /// Exact room ID, not an OpenChat link ID.
     pub room: RoomId,
     /// Room-scoped sender ID; no global account-identity assumption.
@@ -184,8 +191,11 @@ impl Message {
         if value(doc, "li")?.is_some() {
             integer(doc, "li")?;
         }
+        let start = log.as_bytes().as_ptr() as usize - packet.body().as_ptr() as usize;
+        let log_range = start..start + log.as_bytes().len();
         Ok(Self {
             packet,
+            log_range,
             room,
             sender,
             id,
@@ -194,7 +204,8 @@ impl Message {
         })
     }
     fn log(&self) -> &RawDocument {
-        chat_log(body(&self.packet).expect("validated packet")).expect("validated MSG")
+        RawDocument::from_bytes(&self.packet.body()[self.log_range.clone()])
+            .expect("validated log range")
     }
     /// Optional message content, borrowed without materializing BSON.
     pub fn text(&self) -> Option<&str> {
@@ -204,6 +215,58 @@ impl Message {
     /// unknown/invalid attachment JSON is preserved, never silently discarded.
     pub fn attachment(&self) -> Option<&str> {
         string(self.log(), "attachment").expect("validated MSG")
+    }
+    /// Raw source prevId, when supplied. Zero means the first log in node-kakao's
+    /// schema; numeric IDs themselves are not assumed contiguous.
+    pub fn previous_id(&self) -> Option<i64> {
+        value(self.log(), "prevId")
+            .expect("validated log")
+            .map(|_| integer(self.log(), "prevId").expect("validated log"))
+    }
+    #[cfg(feature = "synchronization")]
+    pub(crate) fn from_history(packet: Packet, log: &RawDocument) -> Result<Self, InvalidMessage> {
+        fields(log)?;
+        let room = RoomId::new(integer(log, "chatId")?).map_err(|_| InvalidMessage)?;
+        let id = MessageId::new(integer(log, "logId")?)?;
+        let sender = SenderId::new(integer(log, "authorId")?)?;
+        let kind =
+            MessageType::from(i32::try_from(integer(log, "type")?).map_err(|_| InvalidMessage)?);
+        let sent_at_seconds = integer(log, "sendAt")?;
+        if sent_at_seconds < 0 {
+            return Err(InvalidMessage);
+        }
+        if kind == MessageType::Text && string(log, "message")?.is_none() {
+            return Err(InvalidMessage);
+        }
+        for key in ["message", "attachment", "supplement"] {
+            string(log, key)?;
+        }
+        for key in ["msgId", "prevId", "referer"] {
+            if value(log, key)?.is_some() {
+                integer(log, key)?;
+            }
+        }
+        let start = (log.as_bytes().as_ptr() as usize)
+            .checked_sub(packet.body().as_ptr() as usize)
+            .ok_or(InvalidMessage)?;
+        let end = start
+            .checked_add(log.as_bytes().len())
+            .filter(|end| *end <= packet.body().len())
+            .ok_or(InvalidMessage)?;
+        let log_range = start..end;
+        Ok(Self {
+            packet,
+            log_range,
+            room,
+            sender,
+            id,
+            kind,
+            sent_at_seconds,
+        })
+    }
+    #[cfg(feature = "synchronization")]
+    pub(crate) fn same_log(&self, other: &Self) -> bool {
+        self.log().as_bytes() == other.log().as_bytes()
     }
     /// All source metadata, including unknown fields, without copying the payload.
     pub fn packet(&self) -> &Packet {

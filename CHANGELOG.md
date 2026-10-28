@@ -60,3 +60,18 @@ Phase 1:
 - Add owner CLI receive-only window and static sanitized failure categories.
 - Extend source research, integration tests, event ring benchmarks and decoder
   fuzzing through the message parser. No live compatibility claim.
+
+## Phase 7 — 2026-10-28
+
+- Add optional source-backed bounded SYNCMSG pages and read-only room watermarks,
+  preserving Int64 IDs, unknown types/metadata and distinct history delivery.
+- Add per-room deduplication, suspected/confirmed/unavailable gap evidence and
+  processing acknowledgments with compare-and-swap checkpoints; no exactly-once claim.
+- Add explicit single-session reconnect/resubscription with bounded full jitter,
+  transient dial classification, terminal auth failures, page budgets and caller PING.
+- Add optional private Unix checkpoint files using exclusive locks and atomic fsync/
+  rename, without database/new runtime dependencies.
+- Add selected-room receive-one owner validation with separate room consent and a
+  redacted boolean outcome; no live account operation was performed.
+- Fix explicit TLS shutdown, add sync/recovery/persistence integration coverage,
+  extend fuzzing and benchmark parsing/state/reconnect plus total process RSS.

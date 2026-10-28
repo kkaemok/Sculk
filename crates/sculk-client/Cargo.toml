@@ -23,6 +23,9 @@ path = "../../benches/transport.rs"
 default = []
 read-only = ["secure-session"]
 messaging = ["read-only"]
+synchronization = ["messaging"]
+session-recovery = ["synchronization", "protocol-connect"]
+checkpoint-file = ["synchronization", "dep:libc", "dep:rustix"]
 android-auth = ["protocol-connect", "dep:reqwest", "dep:serde", "dep:serde_json", "dep:sha2", "dep:uuid", "dep:libc", "dep:rustix", "zeroize/serde"]
 protocol-connect = ["secure-session", "sculk-protocol/loco-handshake", "dep:bytes"]
 secure-session = ["dep:tokio-rustls", "dep:webpki-roots", "dep:zeroize", "dep:bson"]
@@ -104,3 +107,9 @@ name = "events"
 harness = false
 path = "../../benches/events.rs"
 required-features = ["messaging"]
+
+[[bench]]
+name = "reliability"
+harness = false
+path = "../../benches/reliability.rs"
+required-features = ["session-recovery"]

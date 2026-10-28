@@ -15,10 +15,14 @@ use tokio_util::codec::Framed;
 
 #[cfg(feature = "android-auth")]
 pub mod auth;
+#[cfg(feature = "checkpoint-file")]
+pub mod checkpoint;
 #[cfg(feature = "protocol-connect")]
 pub mod connect;
 #[cfg(feature = "android-auth")]
 pub mod dial;
+#[cfg(feature = "session-recovery")]
+pub mod managed;
 #[cfg(feature = "messaging")]
 pub mod messaging;
 #[cfg(feature = "read-only")]
@@ -28,6 +32,8 @@ pub mod records;
 pub mod recovery;
 #[cfg(feature = "secure-session")]
 pub mod session;
+#[cfg(feature = "synchronization")]
+pub mod synchronization;
 #[cfg(feature = "secure-session")]
 pub mod tls;
 
@@ -280,6 +286,15 @@ async fn drive<S>(
             }
         }
     };
+    // Explicit disconnect sends TLS close_notify / AsyncWrite shutdown, bounded
+    // by the existing write deadline. Abort/framing/write failures still drop
+    // immediately; never flush a partially failed non-idempotent write.
+    if shutdown.is_some() {
+        tokio::select! { biased;
+            _ = recovery::cancelled(&mut stopped) => {},
+            _ = time::timeout(config.write_timeout, framed.close()) => {},
+        }
+    }
     drop(framed);
     rx.close();
     for (_, p) in pending {

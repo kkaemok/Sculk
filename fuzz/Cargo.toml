@@ -8,7 +8,7 @@ cargo-fuzz = true
 [dependencies]
 libfuzzer-sys = "0.4"
 sculk-protocol = { path = "../crates/sculk-protocol" }
-sculk-client = { path = "../crates/sculk-client", features = ["messaging"] }
+sculk-client = { path = "../crates/sculk-client", features = ["messaging", "synchronization"] }
 bytes = "1"
 tokio-util = { version = "0.7", features = ["codec"] }
 [[bin]]

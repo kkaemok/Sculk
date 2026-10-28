@@ -103,3 +103,13 @@ sync, heartbeat, gap reconciliation and duplicate handling before a moderation
 consumer relies on continuity. A single live text write requires separate owner
 authorization after connection validation; no moderation operation is authorized
 or implemented by this milestone.
+
+## Phase 7 companion APIs
+
+Optional `synchronization` now provides bounded, separately typed history pages and
+acknowledgment-based processing checkpoints. `session-recovery` supplies explicit
+single-session reconnect/resubscription and caller-scheduled PING. These do not
+change the Phase 6 `message_events()` subscription boundary or make its raw stream
+lossless. See [recovery](recovery.md) for dedup windows, suspected versus confirmed
+gaps, server history truncation and conditional at-least-once processing semantics.
+The owner CLI also adds selected-room --receive-one; live sending remains absent.

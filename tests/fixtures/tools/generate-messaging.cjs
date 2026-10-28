@@ -20,9 +20,17 @@ const {runInNewContext}=require('node:vm');
     // Only replace the connection boundary; execute the original sendMessage.
     session.connection={sendPacket:async(method,body)=>{
       const packet={packetId:1,statusCode:0,method,bodyType:0,body};
-      capture("write",encodePacket(packet));return packet;
+      capture(method === "WRITE" ? "write" : "syncmsg",encodePacket(packet));return packet;
     }};
     session.sendMessage(Long.fromString('9007199254740993'),'Synthetic text').catch(e=>{throw e});
+    session.syncMessages(Long.fromString('9007199254740993'),2,Long.fromString('9007199254740993'),Long.fromString('9007199254741093')).catch(e=>{throw e});
+    capture('sync-response',encodePacket({packetId:1,statusCode:0,method:'SYNCMSG',bodyType:0,body:{
+      isOK:true,lastTokenId:Long.fromNumber(7),chatLogs:[1,2].map(offset=>({
+        chatId:Long.fromString('9007199254740993'),logId:Long.fromString('9007199254740993').add(offset),
+        authorId:Long.fromNumber(42),type:offset===1?1:999,message:'Synthetic history',
+        sendAt:1700000000,attachment:'{}',prevId:Long.fromString('9007199254740993').add(offset-1)
+      }))
+    }}));
     // Synthetic MsgRes/ChatlogStruct fields from the pinned node-kakao schema;
     // only framing is produced by executable source. This is NOT a live capture.
     capture('msg',encodePacket({packetId:0,statusCode:0,method:'MSG',bodyType:0,body:{
@@ -46,5 +54,7 @@ const {runInNewContext}=require('node:vm');
   if(!captured.write||!captured.msg)throw Error('Missing source contract');
   writeFileSync(resolve(__dirname,'../agent-write-request.bin'),captured.write);
   writeFileSync(resolve(__dirname,'../node-msg-synthetic.bin'),captured.msg);
-  console.log('Generated one offline WRITE from actual source sendMessage; no sockets or authentication.');
+  writeFileSync(resolve(__dirname,'../agent-syncmsg-request.bin'),captured.syncmsg);
+  writeFileSync(resolve(__dirname,'../node-syncmsg-synthetic.bin'),captured['sync-response']);
+  console.log('Generated offline SYNCMSG and WRITE from actual source sendMessage; no sockets or authentication.');
 })().catch(e=>{console.error(e);process.exitCode=1});

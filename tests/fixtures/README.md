@@ -79,3 +79,18 @@ The generator checks the exact pinned commit and replaces the reference connecti
 module with a constructor that throws before any networking could occur. Only
 source methods and BSON serialization execute. No timer, real credential, room,
 login, registration or third-party network transport is used.
+
+## Phase 7 synchronization contracts
+
+`agent-syncmsg-request.bin` is produced by the actual pinned Agent Messenger
+syncMessages method with room/cursor `9007199254740993`, count 2 and upper watermark
+`9007199254741093`, using the original packet encoder and replacement no-network
+connection. `node-syncmsg-synthetic.bin` is a fictional isOK=true reply with two
+ChatlogStruct records (including an unknown message type); its schemas are from
+node-kakao and its framing comes from Agent's encoder. It is not a server capture.
+
+The existing generate-messaging.cjs now regenerates these alongside Phase 6
+fixtures. Exact source snapshots, license notices and no-network guards remain
+unchanged. Rust tests also construct corrupt, duplicate, reordered and truncated
+synthetic replies. No fixture establishes current authentication, complete history
+availability or recovery of real account messages.

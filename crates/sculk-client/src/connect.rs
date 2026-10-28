@@ -36,6 +36,10 @@ pub enum Error {
     /// Dialer refused or failed a connection; no direct fallback is attempted.
     #[error("connection failed at {0:?}")]
     Dial(Stage),
+    /// Dial failure retaining only a non-sensitive I/O kind for conservative
+    /// retry classification. No endpoint, credentials or source error text.
+    #[error("connection failed at {0:?}: {1:?}")]
+    DialIo(Stage, std::io::ErrorKind),
     /// Request/frame failure.
     #[error("transport failed at {0:?}: {1}")]
     Transport(Stage, crate::Error),
@@ -493,7 +497,7 @@ impl Options {
         tokio::time::timeout(self.stage_timeout, async {
             let stream = dial(stage, endpoint.clone())
                 .await
-                .map_err(|_| Error::Dial(stage))?;
+                .map_err(|error| Error::DialIo(stage, error.kind()))?;
             let client = match protection {
                 Protection::Tls => {
                     let stream = self

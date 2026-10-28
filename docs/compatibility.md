@@ -27,7 +27,11 @@ No live KakaoTalk test has been performed. All passing tests are offline.
 | OpenChat kick / permissions | No | No | No | Unsupported until verified |
 | Modify departed-member kicked list | No | No | No | No independently verified server operation |
 | Echo / moderation bots | No | No | No | Deferred; no placeholder live bots |
-| Session recovery / event replay | No | No | No | Connector retries are not session recovery |
+| Bounded SYNCMSG / CHATINFO watermark | Optional | Source request bytes, corruption, boundaries, ordering, duplicates and truncation | No | Historical source profile; one finite page, no MCHATLOGS fallback |
+| Processing checkpoint / recent-ID dedup | Optional | Ack boundaries, store failure, restart, old IDs and new lag | No | At-least-once attempts only within supported retained windows; no exactly-once claim |
+| Explicit session reconnect / resubscribe | Optional | Partial-sync resume, cancellation, failure latching and single owner | No | Approved connector required; never automatic credential acquisition or WRITE replay |
+| Unix checkpoint file | Optional | Private modes, exact IDs, lock, stale/corrupt/symlink rejection | No | Blocking disk I/O outside driver; crash-stale lock needs inspection |
+| Complete control-event replay | No | No | No | Unknown/membership/moderation events cannot be reconstructed from message history |
 | 24-hour stability / Oracle VM resource targets | No | No | No | Unmeasured on target hardware |
 
 ## Authentication blocker and next step
@@ -150,3 +154,28 @@ routes remain prerequisites for live validation. The next moderation-bot milesto
 is an owner-observed login plus a small receive-only room validation, followed by
 sanitized event/cursor evidence. Sending needs separate authorization; moderation
 commands need independent schema and permission evidence.
+
+## Phase 7 — 2026-10-28
+
+Source-backed synchronization and explicit session recovery are now offline-tested.
+SYNCMSG history is distinct from real-time MSG; no numeric contiguity assumption
+or timestamp deduplication is made. Gap states distinguish suspicion, server-returned
+unprocessed history and unavailable history. The manager subscribes before catch-up,
+keeps work finite, latches permanent failures and requires renewed owner intervention
+on expiry. It exposes caller-scheduled PING without an idle background task.
+
+The owner CLI supports --receive-one with a selected authorized test room and
+separate room consent. It validates one fresh text message's room, log/sender IDs,
+timestamp and type, records a boolean outcome and sends no text/read/moderation
+operation. It is prepared for an owner-controlled test once the account, profile,
+verified key and network routes are provided. That readiness is not evidence of a
+successful current login or reception. Full initial sync, lossless control-event
+replay, automatic account refresh, always-on bot recovery and production stability
+remain unverified/unsupported. See recovery.md and authentication.md.
+
+Existing public operations/features remain available. Connection failures now expose
+an additional `connect::Error::DialIo(Stage, ErrorKind)` variant while retaining the
+legacy Dial variant; downstream exhaustive error matches must include the new case.
+This is a diagnostic/API addition in the experimental SDK, not an unqualified
+source-compatibility guarantee. Transport capacity defaults and WRITE behavior are
+unchanged.

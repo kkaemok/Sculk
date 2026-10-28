@@ -294,3 +294,37 @@ correlation, message ID is the server logId, and client msgId is a separate fiel
 No server acknowledgment implies recipient delivery or exactly-once processing.
 Existing generic Session::request remains a low-level, caller-controlled escape
 hatch; use for live writes requires separate owner authorization.
+
+## Phase 7 processing and recovery
+
+The optional synchronization module sits above the unchanged protocol and secure
+session APIs. It issues one finite SYNCMSG page, validates room/range/schema,
+orders one room's history and retains raw response bytes. Message views use checked
+raw-document byte ranges over a shared packet, avoiding repeated array scans and
+payload copies. Ordinary MSG, history Page, dedup Observation and continuity Gap
+remain distinct concepts; the transport actor never executes application handlers.
+
+A Tracker stores one acknowledged room cursor, a bounded recent-ID set and at most
+one shared active-page packet. It commits through a small compare-and-swap store
+only after explicit application acknowledgment. Suspected gaps freeze realtime
+cursor advancement. Server response evidence can confirm unprocessed history;
+truncation, missing upper anchors and newer lag cannot be called recovered.
+
+The optional managed Room owns one Session/subscription, serializes reconnect,
+cleans up the old generation, uses finite full-jitter retries for conservatively
+classified transport failures and subscribes before read-only catch-up. Permanent
+failures latch; expired credentials need intervention. No connector retries an
+arbitrary operation, refreshes credentials automatically, or resends a WRITE.
+Bounded page/request budgets survive cancellation until the next explicit generation.
+Heartbeat is one caller-scheduled PING, not a background polling/dispatcher task.
+
+The optional Unix checkpoint adapter is outside sculk-protocol. It writes room/cursor
+in a private single-writer file using fsync/rename, without SQLite or new runtime
+dependencies. A crash between an application side effect and checkpoint commit can
+repeat that effect: at-least-once attempts within supported history are conditional,
+not exactly-once processing. Unknown control-event recovery remains unsupported.
+
+Explicit transport disconnect now performs bounded AsyncWrite shutdown (including
+TLS close_notify). Abort, corruption and failed writes still drop immediately;
+a cancellation during graceful close interrupts it. No partially failed WRITE is
+flushed as an implicit retry. No per-message Tokio tasks were introduced.
