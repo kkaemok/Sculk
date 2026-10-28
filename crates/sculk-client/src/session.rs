@@ -1,6 +1,6 @@
 //! Provider-driven authentication lifecycle over an explicit secure transport.
 //!
-//! There is no built-in current KakaoTalk password/device-login provider. A caller
+//! The optional Android account provider is experimental. A caller
 //! must explicitly supply an authorized provider; a mock provider proves only
 //! lifecycle behavior. Providers must not persist tokens, expose them to logs,
 //! clone the transport for other use, or bypass required verification.
@@ -290,6 +290,24 @@ impl Session {
                 Err(RequestError::Expired)
             }
         }
+    }
+    /// Subscribe from now to source-backed MSG events while authenticated.
+    /// Uses the existing bounded ring; no replay or per-subscriber worker.
+    /// Initial LOGINLIST pushes are not replayed by this API.
+    #[cfg(feature = "messaging")]
+    pub fn message_events(
+        &self,
+    ) -> Result<crate::messaging::Events, crate::messaging::ReceiveError> {
+        if self.state() != State::Authenticated {
+            return Err(crate::messaging::ReceiveError::Inactive);
+        }
+        Ok(crate::messaging::Events::new(
+            self.client.subscribe(),
+            self.subscribe(),
+            self.client.connection_state(),
+            self.deadline
+                .ok_or(crate::messaging::ReceiveError::Inactive)?,
+        ))
     }
     /// Stop expiry monitoring and gracefully close the connection.
     pub async fn disconnect(&mut self) {

@@ -6,7 +6,7 @@ license.workspace = true
 publish = false
 [features]
 default = []
-live = ["dep:sculk-client", "sculk-client/android-auth", "sculk-client/read-only", "dep:libc", "dep:sha2", "dep:sculk-protocol", "sculk-protocol/loco-handshake", "dep:tokio", "dep:serde", "dep:serde_json", "dep:zeroize", "dep:rpassword", "dep:rustls-native-certs"]
+live = ["dep:sculk-client", "sculk-client/android-auth", "sculk-client/read-only", "sculk-client/messaging", "dep:libc", "dep:sha2", "dep:sculk-protocol", "sculk-protocol/loco-handshake", "dep:tokio", "dep:serde", "dep:serde_json", "dep:zeroize", "dep:rpassword", "dep:rustls-native-certs"]
 [[bin]]
 name = "sculk-auth-client"
 path = "src/main.rs"

@@ -4,6 +4,7 @@ use sculk_client::{
     auth::{self, AndroidProfile, DeviceIdentity, Limits, Provider},
     connect::{BookingSchema, Endpoint, Options, Protection, Stage},
     dial::ConnectProxy,
+    messaging::Event as MessageEvent,
     read_only::Cursor,
     tls::{TlsSettings, TrustStore},
     Config,
@@ -52,6 +53,7 @@ struct Arguments {
     config: Option<PathBuf>,
     refresh: bool,
     read_only: bool,
+    listen: Option<u64>,
     report: Option<PathBuf>,
 }
 impl Arguments {
@@ -61,6 +63,7 @@ impl Arguments {
             config: None,
             refresh: false,
             read_only: false,
+            listen: None,
             report: None,
         };
         if args.is_empty() || args == ["--help"] {
@@ -84,6 +87,20 @@ impl Arguments {
                 "--read-only" if result.mode == Mode::Live && !result.read_only => {
                     result.read_only = true
                 }
+                "--listen"
+                    if result.mode == Mode::Live
+                        && result.listen.is_none()
+                        && index + 1 < args.len() =>
+                {
+                    index += 1;
+                    let seconds = args[index]
+                        .parse::<u64>()
+                        .map_err(|_| fail("invalid listen duration"))?;
+                    if !(1..=300).contains(&seconds) {
+                        return Err(fail("listen duration must be 1..300 seconds"));
+                    }
+                    result.listen = Some(seconds);
+                }
                 "--report" if result.report.is_none() && index + 1 < args.len() => {
                     index += 1;
                     result.report = Some(PathBuf::from(&args[index]));
@@ -100,7 +117,47 @@ struct Report {
     mode: &'static str,
     last_stage: &'static str,
     outcome: &'static str,
+    failure_category: Option<&'static str>,
     live_connection_verified: bool,
+}
+// Only typed, static categories enter reports. Never format raw error/source text.
+fn failure_category(error: &Failure) -> &'static str {
+    if let Some(error) = error.downcast_ref::<auth::Error>() {
+        return match error {
+            auth::Error::InvalidCredentials(_) => "credentials-rejected",
+            auth::Error::Rejected(_) => "server-rejected",
+            auth::Error::Http(_) => "http-status",
+            auth::Error::Transport => "http-transport-or-tls",
+            auth::Error::Response => "invalid-http-response",
+            auth::Error::Timeout => "timeout",
+            auth::Error::Cancelled => "cancelled",
+            auth::Error::AccountMismatch => "account-mismatch",
+            _ => "authentication-state-or-configuration",
+        };
+    }
+    if let Some(error) = error.downcast_ref::<sculk_client::connect::Error>() {
+        use sculk_client::connect::Error::*;
+        return match error {
+            Dial(_) => "dial-or-policy",
+            Transport(_, _) => "loco-transport",
+            Response(_) => "invalid-loco-response",
+            Rejected(_, _) => "server-rejected",
+            Tls(_) => "tls-handshake-or-verification",
+            Crypto => "key-exchange",
+            Cancelled => "cancelled",
+            Timeout => "timeout",
+            Expired => "expired",
+            Auth(_) => "loginlist-authentication",
+            Config => "configuration",
+        };
+    }
+    if error
+        .downcast_ref::<sculk_client::messaging::ReceiveError>()
+        .is_some()
+    {
+        return "message-stream-ended-or-lagged";
+    }
+    "local-validation-or-operation"
 }
 fn fail(message: &str) -> Failure {
     io::Error::other(message).into()
@@ -172,7 +229,7 @@ fn main() {
 fn run() -> Result<(), Failure> {
     let args = Arguments::parse(&std::env::args().skip(1).collect::<Vec<_>>())?;
     if args.mode == Mode::Help {
-        println!("Sculk experimental connection validation\n--dry-run PATH [--report NEW_PATH]: local config/key checks only; no network\n--check-config is an alias for --dry-run\n--live PATH [--refresh] [--read-only] [--report NEW_PATH]: explicitly authorized account only\nLive mode requires a terminal, account approval, and separate device-registration approval.\n--read-only requests one LCHATLIST page; no message, read mark or moderation operation.\nReports contain only mode/stage/outcome and never secrets, IDs or approval codes.");
+        println!("Sculk experimental connection validation\n--dry-run PATH [--report NEW_PATH]: local config/key checks only; no network\n--check-config is an alias for --dry-run\n--live PATH [--refresh] [--read-only] [--listen SECONDS] [--report NEW_PATH]: explicitly authorized account only\nLive mode requires a terminal, account approval, and separate device-registration approval.\n--read-only requests one LCHATLIST page; --listen 1..300 receives events and prints counts only. No messages, read marks or moderation operations are sent.\nReports contain only mode/stage/outcome and never secrets, IDs or approval codes.");
         return Ok(());
     }
     let stage = Cell::new("configuration");
@@ -194,6 +251,7 @@ fn run() -> Result<(), Failure> {
                     "failed"
                 },
                 live_connection_verified: verified.get(),
+                failure_category: result.as_ref().err().map(failure_category),
             },
         )?;
     }
@@ -308,10 +366,26 @@ fn attempt(
             let options=Options{booking,booking_schema:BookingSchema::AgentMessenger,checkin:Protection::LocoGcm(key.clone()),chat:Protection::LocoGcm(key),tls:TlsSettings::with_roots(trust),transport:Config::default(),stage_timeout:Duration::from_secs(15),total_timeout:Duration::from_secs(60),session_lease:Duration::from_secs(300)};
             let mut session=options.connect(&profile,token,&device,cancel.clone(),|phase,endpoint|{let name=match phase{Stage::Booking=>"booking",Stage::Checkin=>"checkin",Stage::Login=>"loginlist"};stage.set(name);println!("protocol/{name}");proxy.dial(endpoint,cancel.clone())}).await?;drop(device);
             verified.set(true);println!("LIVE LOGINLIST acknowledged; configured account identity validated for this run.");
-            let operation=async{if args.read_only{stage.set("read-only-room-page");let page=session.chat_rooms(Cursor::default()).await?;println!("Read-only page received: {} rooms; eof={}. No personal room data recorded.",page.rooms.len(),page.eof);}Ok::<(),Failure>(())};
+            let operation=async{if args.read_only{stage.set("read-only-room-page");let page=session.chat_rooms(Cursor::default()).await?;println!("Read-only page received: {} rooms; eof={}. No personal room data recorded.",page.rooms.len(),page.eof);}
+                if let Some(seconds)=args.listen {
+                    stage.set("receive-events");
+                    let mut events=session.message_events()?;
+                    let until=tokio::time::Instant::now()+Duration::from_secs(seconds);
+                    let (mut messages,mut unknown,mut malformed)=(0_u64,0_u64,0_u64);
+                    loop { tokio::select! { biased;
+                        _=tokio::time::sleep_until(until)=>break,
+                        event=events.recv(cancel.clone())=>match event? {
+                            MessageEvent::Message(_)=>messages+=1,
+                            MessageEvent::Unknown(_)=>unknown+=1,
+                            MessageEvent::Malformed(_)=>malformed+=1,
+                        }
+                    }}
+                    println!("Receive window complete: messages={messages}; unknown={unknown}; malformed={malformed}. No content or identities recorded.");
+                }
+                Ok::<(),Failure>(())};
             let mut read_cancel=cancel.clone();
             let read=tokio::select!{biased;_=ui::cancelled(&mut read_cancel)=>Err(fail("post-login validation cancelled")),result=operation=>result};
-            stage.set(if read.is_ok(){"disconnect"}else{"read-only-room-page"});session.disconnect().await;
+            if read.is_ok(){stage.set("disconnect");}session.disconnect().await;
             read?;stage.set("complete");println!("Connection closed cleanly. No messages or moderation operations performed.");Ok::<(),Failure>(())
         }.await;
         observer.abort();let _=observer.await;signal.abort();let _=signal.await;result
@@ -328,6 +402,14 @@ mod tests {
         assert!(a(&["--live", "config", "--refresh", "--refresh"]).is_err());
         assert!(a(&["--live", "config", "--read-only", "--report", "report.json"]).is_ok());
         assert!(a(&["--check-config", "config"]).unwrap().mode == Mode::DryRun);
+        assert!(a(&["--dry-run", "config", "--listen", "10"]).is_err());
+        for invalid in ["0", "301", "-1", "text"] {
+            assert!(a(&["--live", "config", "--listen", invalid]).is_err());
+        }
+        assert_eq!(
+            a(&["--live", "config", "--listen", "10"]).unwrap().listen,
+            Some(10)
+        );
     }
     #[test]
     fn pin_changes_and_reports_are_sanitized() {
@@ -340,11 +422,21 @@ mod tests {
             last_stage: "key-identity",
             outcome: "failed",
             live_connection_verified: false,
+            failure_category: Some("server-rejected"),
         })
         .unwrap();
         for secret in ["token", "password", "approval", "userId", "email"] {
             assert!(!report.contains(secret));
         }
+    }
+    #[test]
+    fn diagnostic_categories_never_include_remote_content() {
+        let e: Failure = auth::Error::InvalidCredentials(30).into();
+        assert_eq!(failure_category(&e), "credentials-rejected");
+        let e: Failure = sculk_client::connect::Error::Rejected(Stage::Checkin, -203).into();
+        assert_eq!(failure_category(&e), "server-rejected");
+        let e = fail("secret peer payload must never be reported");
+        assert_eq!(failure_category(&e), "local-validation-or-operation");
     }
     #[tokio::test]
     async fn cancellation_waiter_is_level_triggered() {

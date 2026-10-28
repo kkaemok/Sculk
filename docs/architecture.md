@@ -271,3 +271,26 @@ only selected source-backed fields, do not fabricate names/titles, and do not
 implement a globally stable identity assumption or automatic replay/history.
 A closed, expired or unconfirmed Session cannot issue these requests. --read-only
 in the live tool requests one LCHATLIST page and prints only count/eof, then closes.
+
+## Phase 6 messaging boundary
+
+The optional messaging module sits above framing and the unchanged raw broadcast
+transport. `Events::recv` checks authenticated state, transport state and lease,
+then selects on cancellation, expiry, state changes or the existing ring. It
+parses MSG only after a consumer receives a packet. There is no dispatcher task,
+callback, per-message spawn or second queue. Slow handlers cause explicit Lagged
+rather than blocking network progress. A closed/expired session does not drain
+queued content. Subscriptions begin after authentication and do not promise initial
+LOGINLIST events or offline recovery.
+
+`Message` owns one shared Packet and stores small typed fields. Text, attachment
+and unknown metadata are borrowed from raw BSON; cloning a message does not clone
+payload bytes. Malformed known events and unknown commands preserve the Packet.
+Raw BSON/attachments are sensitive; redacted Debug is not a permission to log them.
+
+The offline `TextRequest` builder encodes one pinned WRITE profile and classifies
+one supplied request outcome. It neither sends nor retries. Packet ID is transport
+correlation, message ID is the server logId, and client msgId is a separate field.
+No server acknowledgment implies recipient delivery or exactly-once processing.
+Existing generic Session::request remains a low-level, caller-controlled escape
+hatch; use for live writes requires separate owner authorization.

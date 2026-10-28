@@ -168,3 +168,41 @@ performance and deployed RSS are unmeasured; no improvement is claimed.
 Supported RustCrypto key/hash-state cleanup features were enabled during the
 security audit. Their drop-time overhead is unmeasured; prior phase measurements
 are retained as historical samples and are not claimed for the changed build.
+
+## Phase 6 bounded event ring — 2026-10-28
+
+Ran `cargo bench -p sculk-client --all-features --bench events --locked` on the
+managed x86-64 host using stable Rust 1.99.1 and ordinary Cargo release settings.
+Each case sends 2,048 uniquely decoded synthetic MSG frames through the real
+current-thread transport actor to a deliberately stalled subscriber, then uses a
+PING response as a completion barrier. Timed work includes BSON framing/validation
+and broadcasting; typed decoding is checked during the subsequent untimed drain.
+No live traffic, encryption, handler throughput or Oracle VM measurement is included.
+
+| Ring slots | Text bytes | Retained body bytes | Overwritten packets | Packets/s (single short sample) |
+|---:|---:|---:|---:|---:|
+| 8 | 1,024 | 9,024 | 2,040 | 1,015,583 |
+| 16 | 1,024 | 18,048 | 2,032 | 479,219 |
+| 64 | 1,024 | 72,192 | 1,984 | 370,708 |
+| 256 | 1,024 | 288,768 | 1,792 | 870,945 |
+| 8 | 65,536 | 525,120 | 2,040 | 26,041 |
+| 16 | 65,536 | 1,050,240 | 2,032 | 25,056 |
+| 64 | 65,536 | 4,200,960 | 1,984 | 26,517 |
+| 256 | 65,536 | 16,803,840 | 1,792 | 21,158 |
+
+At 64 KiB text, 8 slots retain 0.50 MiB of logical BSON bodies versus 4.01 MiB
+for 64 slots, an eightfold payload-budget reduction with an earlier explicit gap.
+This counts retained body lengths, **not allocator residency/RSS**: Bytes can share
+larger backing buffers, framing/crypto/request queues add memory, and applications
+can retain returned packets indefinitely. Tokio rounds a requested capacity up to
+a power of two. Near the 1 MiB body limit, 64 retained bodies alone approach
+64 MiB before those costs. The typed model shares existing packet bytes rather
+than copying content or creating another queue/task; parser scratch allocation
+and actual process RSS were not profiled.
+
+These samples ran alongside other verification builds and are short/noisy. They
+justify the capacity-versus-retention tradeoff, not a throughput improvement or a
+new default. The compatible 64-slot default remains; small hosts should explicitly
+budget smaller event/request capacities (for example, 8 slots) and handle Lagged
+before relying on continuity. Larger queues cannot substitute for synchronization.
+No idle CPU, target 1 GiB RSS, soak, bot stability or live performance claim is made.

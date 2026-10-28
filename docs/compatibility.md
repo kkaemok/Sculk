@@ -21,8 +21,9 @@ No live KakaoTalk test has been performed. All passing tests are offline.
 | Native end-to-end developer example | Yes | Build, help/check-config and underlying integrated sequence | No | Runtime --live and explicit account/registration approval required |
 | Secret session persistence | No | No | No | Deferred with authentication |
 | Read-only room page / metadata / members | Optional | Source requests, schema fixtures, exact Int64, status/room/cursor guards | No | Experimental subset; one page/request, no title/member guessing |
-| Message sending / read marking / moderation | No new high-level API | No live tests | No | Outside initial account validation |
-| Typed message/join/leave/kick/profile/role events | No | No | No | Blocked on current schemas and replay semantics |
+| Text WRITE foundation | Optional offline builder/outcome parser | Actual source request bytes, local TLS acknowledgment/rejection/timeout | No | No high-level live sender; separate authorization required |
+| Typed incoming MSG | Optional | Exact IDs, fields, unknown/malformed retention, lag/cancellation/expiry | No | Historical source subset; no replay guarantee |
+| Join/leave/kick/profile/role events, read marks and moderation | No | No | No | Unsupported; raw packets preserved without inferred actions |
 | OpenChat kick / permissions | No | No | No | Unsupported until verified |
 | Modify departed-member kicked list | No | No | No | No independently verified server operation |
 | Echo / moderation bots | No | No | No | Deferred; no placeholder live bots |
@@ -129,3 +130,23 @@ No owner-approved live credentials/phone workflow was provided. No real account
 connection was attempted. The owner procedure in authentication.md, with a verified
 pin/profile and approved HTTPS/raw TCP routes, is the remaining next step. Uploading
 source to GitHub does not establish live authentication or production readiness.
+
+## Phase 6 — 2026-10-28
+
+`messaging` now provides consumer-side MSG decoding and a bounded authenticated
+subscription. The existing raw event API and default 64-slot capacity remain
+compatible. The owner CLI optionally receives for 1..300 seconds and prints
+counts without personal data. Reports add a static failure category alongside
+the last stage. Initial-login events, reconnect catch-up, heartbeats, durable
+cursors and deduplication remain unimplemented; reception starts at subscription.
+
+Text WRITE request bytes match the pinned Agent Messenger sendMessage method.
+Node-kakao supplies the flat acknowledgment schema, tested using synthetic peers.
+These are source-backed compatibility subsets, not verified current service
+contracts. No message was sent to a real room. No credentials are configured in
+this environment; current network policy grants no Kakao HTTP/raw-TCP destination.
+Actual account approval, profile acceptance, endpoint/key trust and permitted
+routes remain prerequisites for live validation. The next moderation-bot milestone
+is an owner-observed login plus a small receive-only room validation, followed by
+sanitized event/cursor evidence. Sending needs separate authorization; moderation
+commands need independent schema and permission evidence.

@@ -7,7 +7,8 @@ unverified; see [compatibility](docs/compatibility.md) and [research](docs/resea
 
 Implemented: bounded incremental historical LOCO framing, validated BSON, an
 async request driver, correlation, deadlines, cancellation, explicit queue
-limits, raw diagnostic events, clean shutdown, and finite connector retries.
+limits, raw diagnostic events, clean shutdown, and finite connector retries. Optional
+`messaging` adds typed incoming MSG events and an offline text-WRITE foundation.
 An optional experimental AES-GCM record codec has offline cryptographic tests.
 
 ## Run the offline example
@@ -34,7 +35,8 @@ cargo bench --workspace --locked
 The crates have no Android, desktop, Docker, Node, Python, browser, database, or
 external service requirement. The optional protocol connector accepts already-authorized credentials;
 account/device acquisition is available through the experimental android-auth provider; **never pass raw TCP carrying account tokens** to the
-experimental low-level client. No live connection example is provided yet.
+experimental low-level client. The opt-in `sculk-auth-client` example provides
+owner-controlled live validation; it remains live-unverified.
 
 [Verification](docs/verification.md) · [Architecture](docs/architecture.md) · [Performance](docs/performance.md) ·
 [Contributing](CONTRIBUTING.md) · [Security](SECURITY.md) · [Changelog](CHANGELOG.md)
@@ -124,3 +126,32 @@ room metadata and room-member snapshots with typed IDs and strict validation.
 After separate account authorization, CLI `--live ... --read-only` checks one
 room page and prints count/eof only. This sends no messages, read marks or moderation
 commands. API behavior is offline-tested against source contracts, not live-proven.
+
+## Messaging foundation (offline verified; live unverified)
+
+Enable `sculk-client/messaging` for typed MSG reception. `Session::message_events()`
+subscribes from the current point after authentication; it does not replay initial
+LOGINLIST pushes or history. `Events::recv(cancel)` reports lag, cancellation,
+expiry and closure explicitly. Decode and handle events in your application;
+handlers never execute in the network receive task. Unknown commands and malformed
+MSG packets preserve raw evidence, with content-redacted Debug output.
+
+Messages expose exact typed room/sender/log IDs, Unix-second timestamps, source-backed
+message types, borrowed text/attachment strings and the original metadata packet.
+Feed content remains opaque; no join/kick action is inferred from feedType.
+
+`TextRequest` encodes one source-profile text WRITE and classifies a caller-submitted
+response as acknowledgment, rejection, timeout with unknown delivery, or other
+unknown delivery. Encoding sends nothing. There is no high-level live text sender
+or CLI send option in this milestone. Never automatically resend an ambiguous
+request; a server acknowledgment does not prove recipient delivery.
+
+```sh
+cargo test -p sculk-client --all-features --test messaging --locked
+cargo bench -p sculk-client --all-features --bench events --locked
+# Owner-authorized reception only; account/registration gates still apply:
+cargo run -p sculk-auth-client --features live --locked -- --live /ABSOLUTE/private/config.json --listen 30
+```
+
+The receive window prints counts only. See [messaging](docs/messaging.md) for API
+usage, supported schemas, delivery limits and the next live validation step.

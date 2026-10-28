@@ -56,3 +56,26 @@ for deliberately synthetic schema examples (not live captures). IDs use exact
 BSON Long 9007199254740993. Regenerate via
 `bun tests/fixtures/tools/generate-read-only.ts /path/to/pinned/reference`.
 Native tests compare request bytes and validate returned shapes/identity/cursors.
+
+## Phase 6 messaging contracts
+
+* `agent-write-request.bin`: actual pinned Agent Messenger `sendMessage` method,
+  synthetic Int64 room `9007199254740993` and `Synthetic text`. Replaced only the
+  connection boundary; packet encoder is the original reference. No socket/login.
+* `node-msg-synthetic.bin`: synthetic MsgRes/ChatlogStruct fields from pinned
+  node-kakao, encoded by Agent's packet encoder. This tests source-shaped BSON,
+  **not** live event correctness. Large IDs, timestamps and content are fictional.
+* Flat WRITE acknowledgments/rejections are constructed by Rust test peers from
+  node-kakao's WriteRes interface. No independent live reply fixture exists.
+
+Regenerate in a disposable dev directory with `esbuild`, `bson@6` and `zod@4`
+installed, set NODE_PATH to its node_modules, then run:
+
+```sh
+node tests/fixtures/tools/generate-messaging.cjs /PATH/TO/PINNED/agent-messenger
+```
+
+The generator checks the exact pinned commit and replaces the reference connection
+module with a constructor that throws before any networking could occur. Only
+source methods and BSON serialization execute. No timer, real credential, room,
+login, registration or third-party network transport is used.

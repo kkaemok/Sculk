@@ -207,3 +207,27 @@ was attempted. The procedure above is the next validation action for the owner;
 GitHub upload authorization is not live-account or device-registration consent.
 Current Android endpoint/profile acceptance, LOCO-capable credentials, key identity,
 network grants and actual device approval remain the exact live prerequisites.
+
+## Phase 6 receive-only window and failure categories
+
+The owner CLI accepts `--listen SECONDS` only in `--live` mode (1..300 seconds).
+It subscribes after authenticated LOGINLIST and optionally after the one read-only
+page. It prints only message/unknown/malformed counts; no content, identity or
+attachment is logged. Lag, session expiry and transport closure stop the window
+with a failure. Ctrl-C closes the session as for the read-only path. This is not
+initial sync, history loading or a claim of continuous/recoverable delivery.
+
+Reports now include `failure_category`, null on success, from a fixed typed list
+such as `credentials-rejected`, `dial-or-policy`, `tls-handshake-or-verification`,
+`key-exchange`, `invalid-loco-response` and `timeout`. `last_stage` locates the
+HTTP operation or Booking/CHECKIN/LOGINLIST stage; transport internals are not
+fabricated when the underlying error cannot distinguish them. Report categories
+never serialize raw peer/HTTP error strings or secret-bearing sources.
+
+No credentials, authorized account approval, accepted profile or Kakao route grants
+are configured in the Phase 6 environment. Its HTTP policy permits development
+sources/package registries; its raw TCP grant list is empty. Thus no live attempt
+was made and no compatibility claim was upgraded. The tool continues to require
+owner approval and independently trusted key/endpoint identity on a properly
+configured route. No live send flag exists; text encoding tests authorize no
+real-room message transmission.

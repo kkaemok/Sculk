@@ -1,6 +1,6 @@
 //! Experimental request transport for already-secured streams and offline servers.
 //!
-//! No built-in provider implements current KakaoTalk account/device login. Never send tokens over a
+//! The optional Android provider is experimental; current live compatibility is unverified. Never send tokens over a
 //! raw TCP stream. Timed-out or interrupted writes have unknown delivery status
 //! and are never replayed automatically.
 use futures_util::{SinkExt, StreamExt};
@@ -19,6 +19,8 @@ pub mod auth;
 pub mod connect;
 #[cfg(feature = "android-auth")]
 pub mod dial;
+#[cfg(feature = "messaging")]
+pub mod messaging;
 #[cfg(feature = "read-only")]
 pub mod read_only;
 #[cfg(feature = "protocol-connect")]
@@ -44,7 +46,9 @@ pub enum ConnectionState {
 pub struct Config {
     /// Pending and queued requests are each bounded by this limit.
     pub requests: usize,
-    /// Broadcast ring capacity; slow receivers receive an explicit lag error.
+    /// Requested broadcast slots (Tokio rounds up to a power of two). Slow
+    /// receivers receive explicit lag errors. Payloads can approach 1 MiB each;
+    /// reduce this on small hosts and handle gaps explicitly.
     pub events: usize,
     /// Total request deadline, including admission, writing and response.
     pub request_timeout: Duration,

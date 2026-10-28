@@ -48,3 +48,15 @@ Phase 1:
 - Add offline TCP/mock tests, properties, fuzz target, synthetic benchmarks and CI.
 - Document inspected reference snapshots and current authentication blockers.
 - No live KakaoTalk compatibility, messaging, or moderation claim.
+
+## Phase 6 — 2026-10-28
+
+- Add optional consumer-side typed MSG events with exact identifiers/timestamps,
+  zero-copy content/attachment access and raw unknown/malformed preservation.
+- Add authenticated bounded reception with explicit lag, cancellation and expiry;
+  keep the existing raw event API and default ring capacity compatible.
+- Add offline text WRITE encoding and acknowledgment/rejection/unknown-delivery
+  classification, including actual source-generated request bytes; no live sender.
+- Add owner CLI receive-only window and static sanitized failure categories.
+- Extend source research, integration tests, event ring benchmarks and decoder
+  fuzzing through the message parser. No live compatibility claim.

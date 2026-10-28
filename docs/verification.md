@@ -241,3 +241,73 @@ claim follows from offline tests. Refer to compatibility.md for blockers.
 The complete scripts/cloud-install.sh was executed successfully after initial setup;
 its repeat run rebuilt with --locked, passed all 22 tests and ran the mock example.
 Cloud install_script and start_skill drafts were saved; saving is not publication.
+
+## Phase 6 — 2026-10-28 (Asia/Seoul)
+
+Restored checkout at confirmed `11c5ab5320ec52d0e64c03d9d94b7a160bad8c91`;
+public origin HEAD matches that commit. The environment had no Rust installation;
+stable 1.99.1, rustfmt and clippy were installed before changes. The unchanged
+all-feature baseline passed **85 tests** before implementation. No prior milestone
+was recreated and no existing test/assertion was removed or weakened.
+
+| Check | Result |
+|---|---|
+| `cargo fmt --all -- --check` | Passed |
+| `cargo clippy --workspace --all-targets --all-features --locked -- -D warnings` | Passed |
+| `cargo test --workspace --all-features --locked` | **95 passed**, none failed/ignored/filtered |
+| `cargo test --workspace --locked` | **23 passed**, none failed/ignored/filtered |
+| `cargo build --workspace --release --all-features --locked` | Passed |
+| `cargo test -p sculk-client --features messaging --test messaging --locked` | **9 passed**, feature independently verified |
+| `RUSTDOCFLAGS='-D warnings' cargo doc --workspace --all-features --no-deps --locked` | Passed |
+| `cargo +nightly fuzz run decode -- -max_total_time=30 -rss_limit_mb=512` | **348,708 runs in 31 seconds**, no crash; seeded with binary fixtures including synthetic MSG |
+| `git diff --check` | Passed |
+
+The new tests cover exact large IDs, borrowed/raw payload retention, message type
+classification, invalid required/optional fields and duplicate keys, unknown and
+malformed event preservation, explicit lag from a stalled consumer while requests
+still complete, cancellation/drop safety, closure and lease expiry with queued
+content. Text tests pin actual source method bytes, local TLS WRITE acknowledgment,
+rejection/invalid-response outcomes and ambiguous timeout with exactly one write.
+The added CLI test verifies sanitized typed categories; option tests reject listen
+in dry-run mode and invalid durations. Existing authentication/TLS/approval guards
+remain covered by the full suite.
+
+The local TCP/terminal tests require the execution sandbox's supported network
+setting; running without it produced permission errors, then passed unchanged
+under that setting, as did the baseline. This grants the local test capability;
+no live Kakao destination was contacted. Fixture generation ran pinned source
+methods with a replacement no-network connection module; all values are synthetic.
+The fuzz result is a short smoke campaign, not comprehensive correctness/security
+proof. Fuzz dependencies are separately locked; the root Cargo.lock is unchanged.
+
+Changed implementation/test files: `crates/sculk-client/{Cargo.toml,src/lib.rs,
+src/session.rs,src/messaging.rs,tests/messaging.rs}`, `examples/auth-client/{Cargo.toml,
+src/main.rs}`, `benches/events.rs`, `fuzz/{Cargo.toml,Cargo.lock,fuzz_targets/decode.rs}`,
+and `tests/fixtures/{agent-write-request.bin,node-msg-synthetic.bin,
+tools/generate-messaging.cjs,README.md}`. Documentation updates: `README.md`,
+`SECURITY.md`, `CHANGELOG.md`, and `docs/{architecture,authentication,compatibility,messaging,
+performance,research,verification}.md`.
+
+Live compatibility remains unverified. Environment readiness reports no credential
+bindings, no Kakao HTTP grant and no raw TCP destination grants. Owner approval,
+legitimate device confirmation, an accepted current profile, independently trusted
+key/endpoint identity and permitted routes remain necessary. The owner CLI can
+receive counts for a bounded window after LOGINLIST; it cannot send text. No live
+authentication/registration/refresh/message, publication, visibility change or
+remote push was performed. Completed changes are committed locally only.
+
+The event benchmark completed for capacities 8/16/64/256 and text sizes 1/64 KiB;
+all retained/lag counts matched the bounded ring, with performance scope/results
+in performance.md. `cargo run -p sculk-auth-client --all-features --locked -- --help`
+completed without account/configuration/network operations.
+
+Dependency security: `cargo audit --json` (cargo-audit 0.22.2; database commit
+`99670cfc0bc574433034b75876a4b791ccaa2efb`, updated 2026-10-27) exited nonzero
+for **one existing advisory**, RUSTSEC-2023-0071 in rsa 0.9.10; no patched release
+is listed, and there were no informational warnings. Runtime RSA is public-key
+encryption only; private-key decryption is confined to local synthetic test peers.
+See SECURITY.md for scope and limitations. No ignore rule, dependency downgrade,
+custom cryptography, TLS bypass or test weakening was introduced.
+
+`cargo audit --file fuzz/Cargo.lock --json` passed: zero advisories and no
+informational warnings for the separately locked messaging/framing fuzz harness.

@@ -7,6 +7,8 @@ fuzz_target!(|data: &[u8]| {
     }
     let mut codec = sculk_protocol::LocoCodec::default();
     let mut input = bytes::BytesMut::from(data);
-    while let Ok(Some(_)) = codec.decode(&mut input) {}
+    while let Ok(Some(packet)) = codec.decode(&mut input) {
+        let _ = sculk_client::messaging::Event::from_packet(packet);
+    }
     let _ = codec.decode_eof(&mut input);
 });

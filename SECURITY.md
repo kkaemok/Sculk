@@ -11,8 +11,8 @@ serialization occurs before the packet size check; cap caller input separately.
 Queued work and events are bounded but operators must size them against packet
 limits and memory budgets. Raw events are not a lossless control plane.
 
-There is no built-in current KakaoTalk account/device-authentication provider yet. Encryption with a supplied key
-alone is not peer authentication. Do not invent a server key, disable TLS checks,
+An optional experimental Android account/device provider is implemented, but live
+compatibility is unverified. Encryption with a supplied key alone is not peer authentication. Do not invent a server key, disable TLS checks,
 use unverified sessions, or automatically repeat non-idempotent timed-out requests.
 GCM record replay detection belongs to the future session layer. Session secrets
 are not persisted; future storage needs redaction, zeroization, atomic writes,
@@ -29,10 +29,9 @@ A custom trust store replaces the default store and must contain roots from a
 trusted source. No alternate-hostname verifier or plaintext fallback is included.
 AccessToken is zeroized on drop, not Clone, and Debug-redacted. Provider copies,
 serialized BSON/Bytes and TLS buffers are not guaranteed to be zeroized.
-No persistence or automatic refresh is implemented. An authorization provider is
+No credential persistence or automatic refresh is implemented. An authorization provider is
 trusted application code: it must validate its response, honor verification
-requirements, and avoid retaining transport clones or tokens. No current
-KakaoTalk provider is bundled. All authentication failures are terminal for the
+requirements, and avoid retaining transport clones or tokens. The optional Android provider remains live-unverified. All authentication failures are terminal for the
 session; create a new secure session only after addressing the actual cause.
 
 ## Explicit LOCO-GCM protocol profile
@@ -49,9 +48,9 @@ is public-key encryption only; private RSA decryption is test-only.
 Discovery hosts are untrusted data. A dialer must enforce destination/network/
 proxy policy on every address, even after a syntactically valid response. No
 library method opens direct Internet sockets. GCM tag failures are fatal and
-never skipped. No raw account-authentication response is logged. This milestone
-implements no registration or refresh endpoint. Future registration needs
-explicit approval and legitimate device confirmation; do not copy a flow that
+never skipped. No raw account-authentication response is logged. The optional Android provider
+implements explicit registration and refresh. Registration requires
+separate approval and legitimate device confirmation; do not copy a flow that
 registers automatically after a rejection or logs credential-bearing responses.
 
 ## Concrete Android provider
@@ -99,3 +98,37 @@ POLYVAL state and AES-GCM temporary key material. These are existing transitive
 primitives, not replacement cryptography. Source/feature resolution and unchanged
 known-answer/record tests verify integration; comprehensive allocator/TLS/kernel
 memory erasure is still not claimed.
+
+## Phase 6 dependency audit and messaging boundary
+
+`cargo-audit 0.22.2`, advisory database commit
+`99670cfc0bc574433034b75876a4b791ccaa2efb` (updated 2026-10-27), reports one
+root-lockfile advisory: [RUSTSEC-2023-0071](https://rustsec.org/advisories/RUSTSEC-2023-0071.html)
+(CVE-2023-49092), Marvin private-key timing side channels in `rsa 0.9.10`.
+No patched or unaffected release is listed. The audit exits nonzero; this is not
+a clean security result and no ignore/suppression was added.
+
+Reviewed `sculk-protocol/src/handshake.rs`: deployed code imports RsaPublicKey and
+performs public-key OAEP encryption only. RSA private-key import/decryption occurs
+in local synthetic test peers, not a deployed remote private-key service. The
+advisory's private-key-recovery mechanism is therefore not exposed by the reviewed
+client path; this scope assessment does not fix the dependency or certify all
+cryptographic behavior. Keep private-key operations out of the runtime and track
+a maintained upstream fix. Replacing protocol cryptography or disabling security
+checks would not be a suitable workaround. The separate messaging fuzz lockfile
+has its own audit result in docs/verification.md.
+
+Message parsing happens outside the receive driver and preserves malformed/unknown
+packets without converting database feed values into actions. Content, attachment
+and metadata access is explicit and sensitive; Debug redacts content/IDs. The ring
+is bounded by slots, not application memory: payload backing allocations and
+subscriber-held packets require a deployment budget. Lag is explicit and must be
+reconciled before processing relies on continuity. Receive subscriptions have a
+fixed authenticated lease, cancellation and transport-state guards.
+
+Text encoding performs no networking. No high-level live sender or CLI send option
+was added, and live writes still require separate owner authorization. Timeout,
+expiry, interruption and invalid acknowledgments never trigger a resend. A valid
+WRITE acknowledgment is not recipient delivery, a read receipt or exactly-once
+proof. The owner receive-only window records counts, while reports add static
+failure categories; raw message/HTTP errors and personal content are not serialized.
