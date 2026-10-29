@@ -86,3 +86,35 @@ fn unsafe_corrupt_symlink_and_crash_stale_files_are_not_replaced() {
         .is_err());
     assert_eq!(store.load(room).unwrap(), Cursor::default());
 }
+
+#[test]
+fn digit_corruption_and_unprotected_legacy_checkpoints_are_not_trusted() {
+    let directory = Directory::new();
+    let room = RoomId::new(42).unwrap();
+    let target = Cursor::new(9_007_199_254_740_999).unwrap();
+    let mut store = FileStore::open(&directory.0, room).unwrap();
+    store.commit(room, Cursor::default(), target).unwrap();
+    drop(store);
+    let path = directory.0.join("checkpoint");
+    let original = fs::read(&path).unwrap();
+    assert!(original.len() <= 128);
+    let mut corrupt = original.clone();
+    let line = original.split(|b| *b == b'\n').nth(2).unwrap();
+    let position = original
+        .windows(line.len())
+        .position(|w| w == line)
+        .unwrap();
+    corrupt[position] = b'8';
+    fs::write(&path, corrupt).unwrap();
+    assert!(FileStore::open(&directory.0, room).is_err());
+    fs::write(&path, &original).unwrap();
+    assert_eq!(
+        FileStore::open(&directory.0, room)
+            .unwrap()
+            .load(room)
+            .unwrap(),
+        target
+    );
+    fs::write(&path, b"SCULK-CHECKPOINT-1\n42\n9007199254740999\n").unwrap();
+    assert!(FileStore::open(&directory.0, room).is_err());
+}

@@ -182,3 +182,21 @@ READY before the operator sends one controlled text using the official client.
 It validates IDs/room/time/type without printing content or identifiers, then closes.
 No live account test was performed in development. See [recovery](docs/recovery.md),
 [owner procedure](docs/authentication.md) and [verification](docs/verification.md).
+
+## Phase 8 compatibility validation
+
+Phase 7 is preserved at `3d0325e`. The validation CLI now records separate fixed-label
+milestones for local configuration/key checks, HTTPS authentication, GETCONF,
+CHECKIN, account-bound LOGINLIST, selected-room CHATINFO, controlled MSG reception
+and checked local shutdown. HTTP success cannot imply LOCO or message success.
+Known numeric rejection/HTTP statuses remain available without response dumps.
+
+`--receive-one` queries the selected room before READY. Owner account/room consent,
+legitimate device approval, verified key configuration and permitted routes are
+still required; no live account was tested during Phase 8. See the exact procedure
+and report schema in [authentication](docs/authentication.md).
+
+Optional checkpoint files now use checksummed version 2. Unprotected version-1
+files fail closed and are never silently upgraded; review the [migration and crash
+limits](docs/recovery.md) before reusing Phase 7 persisted state. The checksum detects
+accidental corruption, not malicious edits by an owner who can rewrite the file.

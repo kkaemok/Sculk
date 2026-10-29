@@ -277,3 +277,82 @@ an explicit connector. It does not re-run password acquisition/device approval,
 rotate identities or force device replacement. Expired/rejected credentials and
 ambiguous LOGINLIST timeouts require intervention; a coordinator with a permanent
 failure cannot be restarted silently. See recovery.md for processing boundaries.
+
+## Phase 8 owner execution and diagnostic evidence — 2026-10-29
+
+No live test was performed in this environment. Phase 7 exists locally at full
+commit `3d0325e4b3d692666654234c2ce06dc48586e93e`; GitHub main was still `6476179`
+when inspected. Phase 8 uses the recovered local code rather than reconstructing it.
+
+The smallest missing prerequisite is an owner-prepared private configuration and
+interactive approval session with permitted network access. The current environment
+has no configured account credentials/approval or owner-verified key/profile settings,
+no Kakao HTTP destination grant and no raw-TCP domain/IP grants. A copied public
+key fixture is not trusted production key provenance. Do not provide passwords or
+tokens in chat, source, command arguments or reports.
+
+On a trusted terminal controlled by the account owner:
+
+1. Prepare the existing 0600 configuration with the exact expected account ID,
+   email, consistent accepted Android profile, stable device-file path, independently
+   verified public DER key/fingerprint, approved CONNECT proxy and exact endpoint
+   allowlist. Include numeric `test_room_id` for the quiet authorized test room.
+   Permit the HTTPS authentication origin and Booking/GETCONF, advertised CHECKIN
+   and assigned chat routes through the supported network policy. Discovered endpoints
+   remain untrusted and must pass the allowlist; a policy failure is not permission
+   to use a fallback route or repeat authentication automatically.
+2. Run local preflight, using a NEW report path:
+
+   ```sh
+   cargo run -p sculk-auth-client --features live --locked -- --dry-run /ABSOLUTE/private/config.json --report /ABSOLUTE/private/preflight-new.json
+   ```
+
+   This performs no network operation or device-identity creation. Configuration/key
+   bits mean local parsing, public-key format and matching configured SHA-256 bytes;
+   they do not attest real-world key provenance, route access or account compatibility.
+3. For the actual explicitly authorized test, omit refresh/listen/history modes:
+
+   ```sh
+   cargo run -p sculk-auth-client --features live --locked -- --live /ABSOLUTE/private/config.json --receive-one 60 --report /ABSOLUTE/private/live-new.json
+   ```
+
+4. Approve the account and selected room separately, enter the password at the
+   hidden terminal prompt, and complete legitimate phone/device confirmation only
+   after the separate registration-approval prompt if required. Approval codes are
+   displayed solely in the deliberate controlling-terminal verification UI, never
+   diagnostic streams or reports. A rejected operation is terminal; inspect the
+   sanitized result before any new owner-authorized run.
+5. Inspect the individual GETCONF/CHECKIN/LOGINLIST milestones. The tool now performs
+   read-only CHATINFO for the selected room and checks the echoed exact room ID before
+   READY. It subscribes before that query so buffered pushes retain explicit lag.
+   No CHATONROOM, read mark or room-entry mutation is used.
+6. Only after READY, send one controlled text from the official client in the quiet
+   authorized room. Sculk sends nothing. It validates exact log/sender/room IDs,
+   text type and the existing +/-300-second timestamp policy; no content/IDs are
+   printed. Unsupported/malformed events, lag, timeout, cancellation or stale metadata
+   fail the receive milestone. This remains first-matching-message validation, not
+   a cryptographic content challenge or proof of global sender identity.
+7. The tool attempts checked local shutdown, retains a primary reception failure
+   while recording shutdown separately, writes the sanitized report and exits.
+   Ctrl-C cancels work; an interrupted/unconfirmed close is not reported as clean.
+
+Report schema version 2 retains `mode`, `last_stage`, `outcome`, `failure_category`,
+`live_connection_verified` (LOGINLIST only) and `controlled_receive_verified`. It adds
+`milestones` booleans: configuration, server_key, https_authentication,
+device_registration_approved, getconf, checkin, loginlist, selected_room,
+controlled_message and shutdown. False means no success evidence was established;
+registration approval can remain false when not requested. The last failed operation
+is preserved even if later shutdown succeeds. An outcome of completed covers the
+requested mode only; --live without --receive-one cannot establish controlled reception.
+
+`server_status` and `http_status` contain only known typed status fields, otherwise
+null; they never contain account IDs or raw responses. Dial permission/refusal/reset/
+timeout categories are separate static labels. Generic HTTP/TLS failures remain
+honestly combined where the existing provider cannot distinguish them. Unknown error
+sources are not formatted to stderr. Local error explanations are compile-time static
+strings. Reports are exclusively created owner-private files and refuse overwrite.
+
+A successful HTTP authentication, LOGINLIST, selected-room query, controlled receive
+and local close are separate evidence. AsyncWrite shutdown completion is a local
+transport result, not a server logout acknowledgment or recipient-delivery claim.
+All live milestones remain untested in the Phase 8 development environment.

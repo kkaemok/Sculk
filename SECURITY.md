@@ -170,3 +170,38 @@ The receive-one CLI requires separate selected-room consent, validates fresh tex
 metadata, logs no content or IDs and records only a boolean outcome. It sends no
 message/read/moderation command. Unsupported events, lag and expiry fail validation;
 a first matching message cannot establish global session/history compatibility.
+
+## Phase 8 review — 2026-10-29
+
+The RustSec database advanced to `40f5be6fb12ed93fc591bf4ab23b7d793b3f2239`
+(updated 2026-10-28). The root audit still reports one RUSTSEC-2023-0071/rsa 0.9.10
+finding and no patched release; no ignore rule was added. The separate framing/
+synchronization fuzz lock audits clean. Runtime RSA reachability is unchanged:
+ServerKey parses public DER and encrypts; RSA private-key decrypt operations are
+confined to synthetic integration/test-only code, including cfg(test)-gated
+`auth/tests.rs`. AES-GCM record decryption is not RSA private-key decryption.
+No private RSA service, crypto shortcut or certificate-verification bypass was added.
+
+Checkpoint syntax alone did not detect a digit changing into another valid cursor.
+The optional writer/reader now uses version 2 with canonical payload SHA-256 and the
+same 128-byte bound. It rejects unprotected version 1 rather than silently trusting
+or overwriting it. This is accidental-corruption detection, not a MAC or proof of
+processing against malicious same-owner file editing. Independently verified
+migration is described in recovery.md. Existing exclusive lock, private permissions,
+no-follow/nonblocking read, regular-file/link checks and atomic fsync/rename remain.
+The new SHA-256 use reuses an existing dependency; no dependency version was upgraded.
+
+Abrupt subprocess exit tests cover the application-acknowledgment boundary and
+orphan temporary records. They confirm a possible replay after side effect/before
+commit, not exactly-once semantics or power-loss durability. A valid orphan is
+never automatically adopted; stale locks still require operator inspection only
+after confirming the writer is gone. No automatic lock takeover or identity
+rotation was introduced.
+
+The CLI serializes only fixed typed stages, evidence booleans and known numeric
+status fields. It does not format arbitrary error/source chains; local explanations
+are static strings. HTTPS success, account-bound LOGINLIST, room query, controlled
+reception and local close remain independent. Ctrl-C/close errors cannot become
+shutdown success. Selected-room metadata and message content/IDs are not logged.
+Configuration bytes are zeroized earlier after decoding. Existing limitations on
+complete erasure of serialized/TLS/library buffer copies remain in force.

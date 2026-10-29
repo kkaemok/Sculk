@@ -371,3 +371,26 @@ fn synthetic_msg_fixture_decodes_reference_framing() {
     assert_eq!(message.id.get(), ID + 1);
     assert_eq!(message.text(), Some("Synthetic text"));
 }
+
+#[test]
+fn unicode_text_and_raw_attachments_roundtrip_and_invalid_utf8_is_rejected() {
+    let original = message();
+    let mut doc = original.document().unwrap();
+    let log = doc.get_document_mut("chatLog").unwrap();
+    let text = "합성 메시지 👋🏽\n日本語 / e\u{301}";
+    let attachment = "{\"설명\":\"합성\"}";
+    log.insert("message", text);
+    log.insert("attachment", attachment);
+    let packet = crate::packet("MSG", doc);
+    let parsed = Message::from_packet(packet.clone()).unwrap();
+    assert_eq!(parsed.text(), Some(text));
+    assert_eq!(parsed.attachment(), Some(attachment));
+    assert!(!format!("{parsed:?}").contains("합성"));
+    let mut invalid = packet.body().to_vec();
+    let position = invalid
+        .windows(text.len())
+        .position(|w| w == text.as_bytes())
+        .unwrap();
+    invalid[position] = 0xff;
+    assert!(Packet::from_bytes(0, 0, Command::new("MSG").unwrap(), invalid.into()).is_err());
+}

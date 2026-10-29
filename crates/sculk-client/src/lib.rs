@@ -96,6 +96,22 @@ pub enum Error {
     #[error("current KakaoTalk authentication is unverified; see docs/compatibility.md")]
     AuthenticationUnavailable,
 }
+/// Explicit close outcome, without transport error strings or payloads.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, thiserror::Error)]
+pub enum ShutdownError {
+    /// Driver ended before it could acknowledge this close request.
+    #[error("connection already ended before checked shutdown")]
+    Closed,
+    /// Closing exceeded the configured bounded write deadline.
+    #[error("connection shutdown timed out")]
+    Timeout,
+    /// The stream refused or failed AsyncWrite shutdown.
+    #[error("connection shutdown transport failed")]
+    Transport,
+    /// An abort interrupted graceful shutdown.
+    #[error("connection shutdown cancelled")]
+    Cancelled,
+}
 /// Unmatched packets, including broadcasts and late responses. No event semantics
 /// are inferred from a database feedType or unverified LOCO command name.
 #[derive(Clone, Debug)]
@@ -110,7 +126,7 @@ struct Request {
 }
 enum Control {
     Request(Request),
-    Shutdown(oneshot::Sender<()>),
+    Shutdown(oneshot::Sender<Result<(), ShutdownError>>),
 }
 struct Pending {
     command: Command,
@@ -201,10 +217,17 @@ impl Client {
     }
     /// Close the stream, resolve outstanding requests, and wait for driver exit.
     pub async fn disconnect(&self) {
+        let _ = self.disconnect_checked().await;
+    }
+    /// Report whether the driver completed AsyncWrite shutdown. This establishes
+    /// local graceful-close completion, not receipt/processing by the remote peer.
+    pub async fn disconnect_checked(&self) -> Result<(), ShutdownError> {
         let (tx, rx) = oneshot::channel();
-        if self.tx.send(Control::Shutdown(tx)).await.is_ok() {
-            let _ = rx.await;
-        }
+        self.tx
+            .send(Control::Shutdown(tx))
+            .await
+            .map_err(|_| ShutdownError::Closed)?;
+        rx.await.map_err(|_| ShutdownError::Closed)?
     }
     // Synchronous cancellation for session guards, including dropped futures.
     #[cfg(feature = "secure-session")]
@@ -289,12 +312,17 @@ async fn drive<S>(
     // Explicit disconnect sends TLS close_notify / AsyncWrite shutdown, bounded
     // by the existing write deadline. Abort/framing/write failures still drop
     // immediately; never flush a partially failed non-idempotent write.
-    if shutdown.is_some() {
+    let close_result = if shutdown.is_some() {
         tokio::select! { biased;
-            _ = recovery::cancelled(&mut stopped) => {},
-            _ = time::timeout(config.write_timeout, framed.close()) => {},
+            _ = recovery::cancelled(&mut stopped) => Err(ShutdownError::Cancelled),
+            result = time::timeout(config.write_timeout, framed.close()) => match result {
+                Ok(Ok(())) => Ok(()), Ok(Err(_)) => Err(ShutdownError::Transport),
+                Err(_) => Err(ShutdownError::Timeout),
+            },
         }
-    }
+    } else {
+        Err(ShutdownError::Closed)
+    };
     drop(framed);
     rx.close();
     for (_, p) in pending {
@@ -306,8 +334,12 @@ async fn drive<S>(
             let _ = r.reply.send(Err(Error::Closed));
         }
     }
-    state.send_replace(end);
+    state.send_replace(if shutdown.is_some() && close_result.is_err() {
+        ConnectionState::Lost
+    } else {
+        end
+    });
     if let Some(ack) = shutdown {
-        let _ = ack.send(());
+        let _ = ack.send(close_result);
     }
 }

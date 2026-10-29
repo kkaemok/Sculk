@@ -449,3 +449,24 @@ existing GETCONF → CHECKIN → LOGINLIST path retains explicit protection and 
 allowlist checks; it never guesses fallback hosts or substitutes certificate names.
 No credentials/account approval/key configuration or permitted Kakao route is
 available here. All source-shaped success remains offline evidence only.
+
+## Phase 8 reference refresh — 2026-10-29 (Asia/Seoul)
+
+Agent Messenger now resolves to
+`e58739d80305d5e8ddf72e9aad085c2069f4fd3c` (2.40.0, October 29). Comparing its
+src/platforms/kakaotalk tree against the previously pinned
+`9d2de96a43fe3e0e172e8e399454c475146a2697` produced no changes: Android authentication,
+refresh, connection, cryptography, GETCONF/CHECKIN/LOGINLIST, MSG and synchronization
+code are unchanged. Other platform/shared keyring code and skill/version metadata
+changed; they are not a new Sculk wire-compatibility result. node-kakao remains at
+`8512e4699e2cd4c26516b80d38b57b2f85a6cc8a`. No reference login or network code was run.
+
+Existing synthetic fixtures therefore retain their original pinned provenance.
+Nothing in this refresh establishes availability of the Android endpoints, accepted
+current device profile/approval, trusted RSA identity, GCM/TLS route, token lease or
+assigned endpoint schemas. Those remain owner-authorized live test questions.
+
+Also refetched openkakao-cli and KiwiTalk: their HEADs remain respectively
+`6ca6ea2fd05a6660c4a80c0b61b43b416653d1d5` and
+`4e565ca6bfff72f6085f1b0a4a767558c78ff450`; no newer LOCO/authentication evidence
+was available there. Their previously documented platform/transport caveats remain.

@@ -309,6 +309,21 @@ impl Session {
                 .ok_or(crate::messaging::ReceiveError::Inactive)?,
         ))
     }
+    /// Stop monitoring and report the local graceful-close result separately from
+    /// authentication/reception. On failure the session remains terminal.
+    pub async fn disconnect_checked(&mut self) -> Result<(), crate::ShutdownError> {
+        if let Some(task) = self.monitor.take() {
+            task.abort();
+            let _ = task.await;
+        }
+        let result = self.client.disconnect_checked().await;
+        self.state.send_replace(if result.is_ok() {
+            State::Closed
+        } else {
+            State::Failed(AuthError::Interrupted)
+        });
+        result
+    }
     /// Stop expiry monitoring and gracefully close the connection.
     pub async fn disconnect(&mut self) {
         if let Some(task) = self.monitor.take() {

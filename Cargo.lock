@@ -1519,7 +1519,9 @@ dependencies = [
 name = "sculk-auth-client"
 version = "0.1.0"
 dependencies = [
+ "futures-util",
  "libc",
+ "rcgen",
  "rpassword",
  "rustls-native-certs",
  "sculk-client",
@@ -1528,6 +1530,8 @@ dependencies = [
  "serde_json",
  "sha2",
  "tokio",
+ "tokio-rustls",
+ "tokio-util",
  "zeroize",
 ]
 

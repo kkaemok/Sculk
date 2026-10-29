@@ -179,3 +179,32 @@ legacy Dial variant; downstream exhaustive error matches must include the new ca
 This is a diagnostic/API addition in the experimental SDK, not an unqualified
 source-compatibility guarantee. Transport capacity defaults and WRITE behavior are
 unchanged.
+
+## Phase 8 real-world validation status — 2026-10-29
+
+The actual baseline is locally available `3d0325e4b3d692666654234c2ce06dc48586e93e`.
+Agent Messenger advanced to `e58739d80305d5e8ddf72e9aad085c2069f4fd3c` (2.40.0,
+October 29), but its src/platforms/kakaotalk tree is unchanged from the prior pinned
+reference. node-kakao HEAD remains `8512e4699e2cd4c26516b80d38b57b2f85a6cc8a`.
+No newer source evidence resolves current account/profile/transport acceptance.
+
+| Live milestone | Actual Phase 8 result |
+|---|---|
+| HTTPS account authentication / legitimate approval | Not attempted |
+| GETCONF | Not attempted |
+| CHECKIN | Not attempted |
+| Correct-account LOGINLIST | Not attempted |
+| Selected-room CHATINFO | Not attempted |
+| Controlled MSG reception | Not attempted |
+| Live-session shutdown | Not attempted |
+
+No server compatibility failure or success was observed because the real service
+was not contacted. Missing owner approval/credentials, verified key/profile setup
+and permitted Kakao routes are explicit prerequisites. Native local TLS and source-
+shaped fixtures remain offline evidence. The improved CLI can distinguish each
+milestone and local shutdown failure without secret-bearing logs, but that is
+preparation for the first real-world milestone, not completion of it.
+
+Version-2 checkpoint files add accidental-corruption detection. Unprotected version-1
+files now fail closed and require independently verified migration, as described
+in recovery.md; no silent compatibility claim or automatic state rewrite is made.

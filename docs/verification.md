@@ -460,3 +460,151 @@ Changed files:
 - `tests/fixtures/node-syncmsg-synthetic.bin`
 
 - `tests/fixtures/tools/generate-messaging.cjs`
+
+## Phase 8 — 2026-10-29 (Asia/Seoul)
+
+Actual baseline: **`3d0325e4b3d692666654234c2ce06dc48586e93e`**, recovered locally.
+The unchanged all-feature suite passed **111 tests before modifications**. GitHub
+main was confirmed at `6476179206f7e458cd128ad6633a80768e54e3b5`; Phase 7 was not
+reconstructed or presumed to exist remotely. Existing work/history was preserved.
+
+**The first real-world compatibility milestone was not established.** No real
+service/account operation was attempted. Current environment observations were
+ready/current with enforced restricted networking, zero configured credential/runtime
+bindings, no Kakao HTTP grant and an empty raw-TCP grant list. There is also no
+owner-approved account/room interactive test session or owner-private configuration with independently verified
+public-key/profile settings. These are prerequisites, not observed server
+rejections. No credential values/files were searched or printed.
+
+| Actual live stage | Result |
+|---|---|
+| HTTPS authentication / legitimate device confirmation | Not attempted |
+| GETCONF | Not attempted |
+| CHECKIN | Not attempted |
+| Account-bound LOGINLIST | Not attempted |
+| Selected-room CHATINFO | Not attempted |
+| Controlled MSG reception | Not attempted |
+| Live-session shutdown | Not attempted |
+
+No server authentication/protocol compatibility failure or success was observed.
+Native mock TLS, source fixtures and synthetic dry-run inputs remain offline
+validation. The exact owner execution procedure and report semantics are in
+authentication.md; no password/token should be pasted into chat or committed.
+
+| Offline check | Result |
+|---|---|
+| `cargo fmt --all -- --check` | Passed |
+| `cargo clippy --workspace --all-targets --all-features --locked -- -D warnings` | Passed |
+| `cargo test --workspace --all-features --locked` | **122 passed**, none failed/ignored/filtered |
+| `cargo test --workspace --locked` | **25 passed**, none failed/ignored/filtered |
+| `cargo test -p sculk-client --features checkpoint-file --test checkpoint --test checkpoint_crash --locked` | **4 passed**, optional checksum feature independently verified |
+| `cargo build --workspace --release --all-features --locked` | Passed |
+| `RUSTDOCFLAGS='-D warnings' cargo doc --workspace --all-features --no-deps --locked` | Passed |
+| Owner CLI `--help` | Passed, with the standalone live compile feature; no live mode invoked |
+| Full CLI synthetic `--dry-run` + new report, correct local fixture pin | Exit 0; configuration/key true, all live milestones false, no identity created, report mode 0600 |
+| Full CLI synthetic `--dry-run` + new report, wrong local fixture pin | Exit 1 at server-key; configuration true/key false, all live milestones false, no identity created |
+| `cargo +nightly fuzz run decode -- -max_total_time=30 -rss_limit_mb=512` | **971,965 runs in 31 seconds**, no crash; existing framing/MSG/SYNCMSG target |
+| `cargo audit --json` | Nonzero: one existing RUSTSEC-2023-0071/rsa 0.9.10 advisory, no patched release listed; no suppressions/warnings |
+| `cargo audit --file fuzz/Cargo.lock --json` | Passed: zero advisories/warnings |
+| Operational/event/reliability release benchmarks | Completed; actual scope and measurements in performance.md |
+| `git diff --check` | Passed |
+
+The concrete validation changes add typed fixed stages, independent milestone bits,
+known numeric error statuses and sanitized dial categories. The CLI now queries the
+selected room before READY and uses checked local shutdown; HTTP auth/LOGINLIST/
+message/close success cannot substitute for one another. Error-source strings and
+raw HTTP/BSON are not formatted. Local explanations are statically defined strings.
+Configuration bytes are released/zeroized earlier. No generic recovery/validation
+framework or automatic retry workflow was introduced.
+
+Native local TLS tests cover CHATINFO-before-MSG with exact Int64 room binding,
+wrong-room/rejected replies, cancelled query and receive timeout without false message
+success. Milestone tests ensure HTTP success cannot imply LOCO/login/reception.
+Unicode text, combining marks and raw JSON attachments round-trip; invalid UTF-8
+fails packet validation. Existing unknown types/events, lag, ordering, duplicates,
+checkpoint boundaries, rejected reconnect and WRITE-ambiguity regressions remain.
+New shutdown tests distinguish local success, transport error, timeout and an already
+lost connection, with no sensitive source text in errors. Legacy disconnect APIs
+remain available; the CLI uses the checked result.
+
+One real persistence gap was fixed: a syntactically valid digit corruption could
+alter the version-1 cursor unnoticed. Version 2 adds canonical SHA-256 integrity
+while retaining the 128-byte bound and private atomic writer. Old unprotected files
+fail closed and require independently verified migration; no old user state was
+modified or silently upgraded. A subprocess test exits without destructors at four
+processing/commit boundaries and confirms replay/commit/orphan behavior after restart.
+The orphan-temp case is explicitly simulated using real-writer bytes; no power-loss
+injection or exactly-once processing claim is made. No existing test was weakened.
+
+The SHA-256 dependency already existed; no resolved package version was upgraded.
+Cargo.lock changes only add already-resolved development dependencies for the owner
+CLI's local TLS tests. The rustix CPU-clock feature is dev-only. Security audit uses
+database `40f5be6fb12ed93fc591bf4ab23b7d793b3f2239`, updated 2026-10-28. Reviewed
+runtime RSA remains public-key encryption only; private-key decrypt is test-only.
+The existing advisory remains documented and unsuppressed.
+
+Reference refresh: Agent Messenger advanced to `e58739d80305d5e8ddf72e9aad085c2069f4fd3c`
+but its KakaoTalk source tree is unchanged. node-kakao, openkakao-cli and KiwiTalk
+remain at their recorded snapshots. No new live acceptance evidence was found.
+
+Performance samples include isolated local TLS idle/1-Hz traffic RSS/whole-process
+CPU, sync-page/tracker residency, tmpfs checkpoint I/O, event capacities 8/16/32 and
+local reconnect setup overhead. They do not measure a real account, Oracle hardware,
+physical storage durability, long-term idle/CPU behavior or production stability.
+
+The smallest next milestone is an owner-prepared private configuration, verified
+key/profile, explicit account/room approval and permitted route, followed by one
+trusted-terminal `--receive-one 60` run. Record each real milestone separately and
+stop at the first rejection/failure; do not retry rejected auth, rotate identities,
+change certificate checks or infer compatibility from synthetic success.
+
+Finished work is committed locally only. No push, force-push, package publication,
+release, repository-visibility change, live send or moderation operation was performed.
+
+Changed files:
+
+- `CHANGELOG.md`
+
+- `Cargo.lock`
+
+- `README.md`
+
+- `SECURITY.md`
+
+- `benches/operational.rs`
+
+- `crates/sculk-client/Cargo.toml`
+
+- `crates/sculk-client/src/checkpoint.rs`
+
+- `crates/sculk-client/src/lib.rs`
+
+- `crates/sculk-client/src/session.rs`
+
+- `crates/sculk-client/tests/checkpoint.rs`
+
+- `crates/sculk-client/tests/checkpoint_crash.rs`
+
+- `crates/sculk-client/tests/messaging.rs`
+
+- `crates/sculk-client/tests/shutdown.rs`
+
+- `docs/authentication.md`
+
+- `docs/compatibility.md`
+
+- `docs/performance.md`
+
+- `docs/recovery.md`
+
+- `docs/research.md`
+
+- `docs/verification.md`
+
+- `examples/auth-client/Cargo.toml`
+
+- `examples/auth-client/src/diagnostics.rs`
+
+- `examples/auth-client/src/main.rs`
+
+- `examples/auth-client/src/validation.rs`

@@ -136,3 +136,39 @@ possible duplicate side effects between processing and checkpoint commit. Bounde
 in-memory dedup helps within a process, but is not exactly-once processing. A bot
 requiring durable exactly-once side effects needs an enforceable application
 transaction/idempotency mechanism; this SDK does not claim one.
+
+## Phase 8 checkpoint integrity and process restart
+
+The Phase 7 version-1 file had syntax/range checks but could not detect a cursor
+digit changing into another valid integer. Version 2 now stores canonical version,
+room and cursor lines followed by SHA-256 of that exact payload. Full record length
+remains bounded by 128 bytes, including maximal signed-Int64 IDs. The reader rejects
+missing/incorrect digests, noncanonical/truncated/trailing data and version-1 files.
+SHA-256 is supplied by the existing maintained sha2 dependency, now enabled by
+checkpoint-file; it is not custom cryptography or a keyed authenticity guarantee.
+An owner who can rewrite the file can forge its checksum. Existing private-directory,
+no-follow, file-type/link/mode/size, exclusive-lock and fsync/rename checks still apply.
+
+Version-1 state is never overwritten or automatically trusted/upgraded. Before
+migration, the owner must independently verify the acknowledged processing boundary
+from application records. Preserve the old directory, create a new private directory,
+and initialize FileStore with only that verified boundary through its existing CAS
+interface. If a boundary cannot be verified, restart from a conservative earlier
+cursor and handle possible duplicate side effects. Do not merely compute a checksum
+for an unverified old cursor. The receive-only CLI does not load these checkpoints.
+
+A deterministic subprocess test exits without Rust destructors before processing,
+after a simulated side effect but before acknowledgment, after a successful actual
+acknowledgment, and with a valid orphan temporary checkpoint. The parent waits for
+process termination before simulating explicit operator removal of the stale lock.
+It verifies that unacknowledged work replays, acknowledged state reopens exactly,
+and an orphan temp file is never adopted. The orphan is constructed using bytes from
+the real writer and explicitly simulates an interruption before rename; this is not
+power-loss injection into an actual filesystem commit. A side effect before commit
+can repeat. No exactly-once or physical disk-crash durability claim is made.
+
+`Client::disconnect_checked` and `Session::disconnect_checked` now expose local
+shutdown success versus already-ended, transport failure, deadline and abort outcomes.
+The existing disconnect methods remain available. Failed writes are still dropped
+without implicit flush/replay. The validation CLI uses checked shutdown so a timeout
+or failed close cannot silently become a verified clean-close milestone.

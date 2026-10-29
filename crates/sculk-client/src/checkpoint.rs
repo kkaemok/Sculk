@@ -8,6 +8,7 @@ mod unix {
         read_only::RoomId,
         synchronization::{CheckpointStore, Cursor, StoreError},
     };
+    use sha2::{Digest, Sha256};
     use std::{
         fs::{self, File, OpenOptions},
         io::{Read, Write},
@@ -85,7 +86,7 @@ mod unix {
             }
             let text = std::str::from_utf8(&bytes).map_err(|_| StoreError)?;
             let mut lines = text.lines();
-            if lines.next() != Some("SCULK-CHECKPOINT-1") {
+            if lines.next() != Some("SCULK-CHECKPOINT-2") {
                 return Err(StoreError);
             }
             let room = lines
@@ -101,7 +102,14 @@ mod unix {
                     .map_err(|_| StoreError)?,
             )
             .map_err(|_| StoreError)?;
-            if room != self.room.get() || lines.next().is_some() {
+            let checksum = lines.next().ok_or(StoreError)?;
+            let payload = format!("SCULK-CHECKPOINT-2\n{room}\n{}\n", cursor.get());
+            let expected = format!("{payload}{:x}\n", Sha256::digest(payload.as_bytes()));
+            if room != self.room.get()
+                || lines.next().is_some()
+                || checksum.len() != 64
+                || text != expected
+            {
                 return Err(StoreError);
             }
             Ok(cursor)
@@ -137,7 +145,8 @@ mod unix {
                 .map_err(|_| StoreError)?;
             let mut renamed = false;
             let result: Result<(), StoreError> = (|| {
-                write!(file, "SCULK-CHECKPOINT-1\n{}\n{}\n", room.get(), next.get())
+                let payload = format!("SCULK-CHECKPOINT-2\n{}\n{}\n", room.get(), next.get());
+                writeln!(file, "{payload}{:x}", Sha256::digest(payload.as_bytes()))
                     .map_err(|_| StoreError)?;
                 file.sync_all().map_err(|_| StoreError)?;
                 fs::rename(&temporary, self.directory.join("checkpoint"))

@@ -256,3 +256,56 @@ The compatible 64-slot default remains. Real TLS/GCM/authentication buffers, dis
 checkpoint fsync, live traffic, callback costs, long-lived fragmentation, reconnect
 storms and multi-room history are outside these samples. The 1 GiB / 1/8 OCPU
 hardware target, idle CPU, soak stability and live latency remain unmeasured.
+
+## Phase 8 operational samples — 2026-10-29
+
+Ran `cargo bench -p sculk-client --all-features --bench operational --bench events
+--bench reliability --locked`. Stable Rust 1.99.1, ordinary release settings, managed
+x86-64 Linux with a 2-CPU / 8-GiB cgroup. This is not the Oracle E2.1.Micro target.
+No speedup or production/target-resource guarantee is inferred from these samples.
+
+The new operational cases run in separate processes, use real local rustls over
+in-memory streams and a synthetic authorization grant, and retain a local peer.
+They perform no HTTP account authentication, GETCONF/CHECKIN/LOGINLIST or real
+service traffic. Total process RSS comes from `/proc/self/smaps_rollup`; CPU time
+uses the safe rustix CLOCK_PROCESS_CPUTIME_ID wrapper, not a lazily updated scheduler
+counter. Measurements include the in-process mock peer, allocation/framing overhead
+and the measurement calls themselves. The time feature is dev-only; no new unsafe
+runtime code, background poller or per-message task was added.
+
+| Operational case | Observed sample | Scope |
+|---|---:|---|
+| Idle local TLS session, 5.000 s | 3,764 KiB RSS before/after; 0.137 ms process CPU (0.00275% of one core) | Existing actor/lease monitor, no traffic or automatic heartbeat |
+| Five 512-byte-text messages at 1 Hz, 5.009 s | 3,684 → 3,828 KiB RSS; 6.857 ms process CPU (0.13688% of one core) | TLS send/receive, frame validation, typed event parsing; only five samples |
+| One 100 × 2-KiB-text SYNCMSG page | 214,217-byte body; 3,688 → 4,432 KiB total RSS | Includes source peer/allocator buffers and 100 zero-copy message views |
+| Tracker retaining that active page | 4,432 KiB RSS | Shares response bytes; no additional measured RSS at snapshot granularity |
+| After acknowledging/dropping that page | 4,432 KiB RSS | Allocator/buffer residency need not return to baseline |
+| Version-2 checkpoint CAS + checksum/fsync/rename | 10.6 us wall and 10.6 us process CPU per commit; 1,992 → 2,000 KiB RSS | Mean of 100 commits after warmup on `/tmp` **tmpfs**, not physical block-storage durability/latency |
+
+The short 5-second idle/traffic windows are preparation measurements, not live idle
+usage, a leak test, target CPU scaling evidence or a soak. Disk-backed fsync on the
+Oracle volume can be very different from tmpfs. No conclusion about power-loss
+behavior follows from the checkpoint timing or process-crash tests.
+
+Repeated bounded-ring samples (2,048 frames, stalled receiver, no TLS in this
+particular benchmark) measured total RSS at retention as follows:
+
+| Capacity | 512-byte text RSS KiB | 2-KiB text RSS KiB | 16-KiB text RSS KiB | 16-KiB logical retained bytes |
+|---:|---:|---:|---:|---:|
+| 8 | 2,140 | 2,092 | 2,524 | 131,904 |
+| 16 | 2,032 | 2,184 | 2,748 | 263,808 |
+| 32 | 2,044 | 2,156 | 3,148 | 527,616 |
+
+Each case reported exactly 2,040/2,032/2,016 overwritten packets for 8/16/32 slots.
+The small-case RSS variation illustrates why payload counts alone and tiny runtime
+samples cannot establish a general memory improvement. Capacities/defaults are
+unchanged; application-retained pages/events still need their own budget.
+
+The existing reliability benchmark also completed: typed 512-byte-text parse
+2,217.8 ns; real 128-ID dedup lookup 11.8 ns; in-memory state acknowledgment 198.6 ns;
+20 × 512-byte sync page 36,864.3 ns; immediate retry wrapper 159.1 ns; one transient
+retry with configured 0..1-ms jitter 1,545.7 us including timer delay; local TLS
+setup/cleanup 416.7 us including certificate generation and synthetic grant.
+No HTTP auth, server RTT or live protocol reconnection is included in that last
+number. Earlier phase samples remain historical measurements, not controlled
+before/after comparisons or claims of improvement.

@@ -75,3 +75,15 @@ Phase 1:
   redacted boolean outcome; no live account operation was performed.
 - Fix explicit TLS shutdown, add sync/recovery/persistence integration coverage,
   extend fuzzing and benchmark parsing/state/reconnect plus total process RSS.
+
+## Phase 8 — 2026-10-29
+
+- Preserve recovered Phase 7 baseline; no live compatibility claim or account activity.
+- Record separate typed validation milestones, sanitized numeric statuses and precise
+  dial failure categories; never infer message reception from HTTP or LOGINLIST.
+- Query selected-room CHATINFO before controlled reception and report checked local
+  shutdown failures instead of silently calling every close successful.
+- Add checksummed checkpoint format 2; refuse unprotected legacy state without
+  automatic migration, and cover abrupt process restart/orphan temporary records.
+- Add concrete local TLS validation, Unicode/malformed input and shutdown regressions,
+  plus isolated idle/low-traffic CPU/RSS, synchronization memory and checkpoint-I/O samples.

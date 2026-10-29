@@ -25,7 +25,7 @@ read-only = ["secure-session"]
 messaging = ["read-only"]
 synchronization = ["messaging"]
 session-recovery = ["synchronization", "protocol-connect"]
-checkpoint-file = ["synchronization", "dep:libc", "dep:rustix"]
+checkpoint-file = ["synchronization", "dep:libc", "dep:rustix", "dep:sha2"]
 android-auth = ["protocol-connect", "dep:reqwest", "dep:serde", "dep:serde_json", "dep:sha2", "dep:uuid", "dep:libc", "dep:rustix", "zeroize/serde"]
 protocol-connect = ["secure-session", "sculk-protocol/loco-handshake", "dep:bytes"]
 secure-session = ["dep:tokio-rustls", "dep:webpki-roots", "dep:zeroize", "dep:bson"]
@@ -113,3 +113,13 @@ name = "reliability"
 harness = false
 path = "../../benches/reliability.rs"
 required-features = ["session-recovery"]
+
+[[bench]]
+name = "operational"
+harness = false
+path = "../../benches/operational.rs"
+required-features = ["checkpoint-file", "session-recovery"]
+
+[dev-dependencies.rustix]
+version = "1"
+features = ["time"]

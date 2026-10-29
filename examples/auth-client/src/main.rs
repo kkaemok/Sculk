@@ -1,8 +1,11 @@
 //! Opt-in local validation tool. Help/dry-run perform no network operations.
+mod diagnostics;
 mod ui;
+mod validation;
+use diagnostics::{Milestones, Progress, Stage};
 use sculk_client::{
     auth::{self, AndroidProfile, DeviceIdentity, Limits, Provider},
-    connect::{BookingSchema, Endpoint, Options, Protection, Stage},
+    connect::{BookingSchema, Endpoint, Options, Protection},
     dial::ConnectProxy,
     messaging::Event as MessageEvent,
     read_only::Cursor,
@@ -13,7 +16,6 @@ use sculk_protocol::handshake::ServerKey;
 use serde::{Deserialize, Serialize};
 use sha2::{Digest, Sha256};
 use std::{
-    cell::Cell,
     io::{self, IsTerminal, Write},
     path::{Path, PathBuf},
     time::Duration,
@@ -124,14 +126,78 @@ impl Arguments {
 #[derive(Serialize)]
 struct Report {
     mode: &'static str,
-    last_stage: &'static str,
+    schema_version: u8,
+    last_stage: Stage,
+    milestones: Milestones,
     outcome: &'static str,
     failure_category: Option<&'static str>,
+    server_status: Option<i64>,
+    http_status: Option<u16>,
     live_connection_verified: bool,
     controlled_receive_verified: bool,
 }
+// Extract only documented status fields from known typed errors; never format
+// a source chain or serialize account IDs, raw HTTP/BSON or arbitrary errors.
+fn status_codes(error: &Failure) -> (Option<i64>, Option<u16>) {
+    use sculk_client::{
+        connect::Error as Connect,
+        read_only::Error as Read,
+        session::{AuthError, RequestError},
+    };
+    if let Some(error) = error.downcast_ref::<auth::Error>() {
+        return match error {
+            auth::Error::InvalidCredentials(n) | auth::Error::Rejected(n) => (Some(*n), None),
+            auth::Error::Http(n) => (None, Some(*n)),
+            _ => (None, None),
+        };
+    }
+    if let Some(error) = error.downcast_ref::<Connect>() {
+        return match error {
+            Connect::Rejected(_, n) | Connect::Auth(AuthError::Rejected(n)) => (Some(*n), None),
+            Connect::Transport(_, sculk_client::Error::Rejected(n)) => {
+                (Some(i64::from(*n as i16)), None)
+            }
+            _ => (None, None),
+        };
+    }
+    if let Some(validation::Error::Room(error)) = error.downcast_ref::<validation::Error>() {
+        return match error {
+            Read::Rejected(n) => (Some(*n), None),
+            Read::Session(RequestError::Transport(sculk_client::Error::Rejected(n))) => {
+                (Some(i64::from(*n as i16)), None)
+            }
+            _ => (None, None),
+        };
+    }
+    (None, None)
+}
 // Only typed, static categories enter reports. Never format raw error/source text.
 fn failure_category(error: &Failure) -> &'static str {
+    if let Some(error) = error.downcast_ref::<validation::Error>() {
+        return match error {
+            validation::Error::Room(sculk_client::read_only::Error::Rejected(_)) => {
+                "room-query-rejected"
+            }
+            validation::Error::Room(_) => "room-query-failed",
+            validation::Error::Receive(sculk_client::messaging::ReceiveError::Lagged(_)) => {
+                "message-stream-lagged"
+            }
+            validation::Error::Receive(_) => "message-stream-ended",
+            validation::Error::Timeout => "receive-timeout",
+            validation::Error::Cancelled => "cancelled",
+            validation::Error::Clock => "system-clock",
+            validation::Error::InvalidMessage => "message-metadata-invalid",
+            validation::Error::UnsupportedEvent => "unsupported-event",
+        };
+    }
+    if let Some(error) = error.downcast_ref::<sculk_client::ShutdownError>() {
+        return match error {
+            sculk_client::ShutdownError::Closed => "shutdown-already-lost",
+            sculk_client::ShutdownError::Timeout => "shutdown-timeout",
+            sculk_client::ShutdownError::Transport => "shutdown-transport",
+            sculk_client::ShutdownError::Cancelled => "cancelled",
+        };
+    }
     if let Some(error) = error.downcast_ref::<auth::Error>() {
         return match error {
             auth::Error::InvalidCredentials(_) => "credentials-rejected",
@@ -148,7 +214,11 @@ fn failure_category(error: &Failure) -> &'static str {
     if let Some(error) = error.downcast_ref::<sculk_client::connect::Error>() {
         use sculk_client::connect::Error::*;
         return match error {
-            Dial(_) | DialIo(_, _) => "dial-or-policy",
+            DialIo(_, io::ErrorKind::PermissionDenied) => "dial-permission-denied",
+            DialIo(_, io::ErrorKind::ConnectionRefused) => "dial-connection-refused",
+            DialIo(_, io::ErrorKind::ConnectionReset) => "dial-connection-reset",
+            DialIo(_, io::ErrorKind::TimedOut) => "dial-timeout",
+            Dial(_) | DialIo(_, _) => "dial-failed",
             Transport(_, _) => "loco-transport",
             Response(_) => "invalid-loco-response",
             Rejected(_, _) => "server-rejected",
@@ -169,8 +239,16 @@ fn failure_category(error: &Failure) -> &'static str {
     }
     "local-validation-or-operation"
 }
-fn fail(message: &str) -> Failure {
-    io::Error::other(message).into()
+#[derive(Debug)]
+struct LocalFailure(&'static str);
+impl std::fmt::Display for LocalFailure {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.write_str(self.0)
+    }
+}
+impl std::error::Error for LocalFailure {}
+fn fail(message: &'static str) -> Failure {
+    Box::new(LocalFailure(message))
 }
 fn ask(prompt: &str, answer: &str) -> bool {
     if !io::stdin().is_terminal() || !io::stdout().is_terminal() {
@@ -230,33 +308,40 @@ fn state_name(state: &auth::State) -> &'static str {
         Failed(_) => "failed",
     }
 }
-fn valid_controlled_message(
-    message: &sculk_client::messaging::Message,
-    room: sculk_client::read_only::RoomId,
-    now: u64,
-) -> bool {
-    message.room == room
-        && message.id.get() > 0
-        && message.sender.get() > 0
-        && message.kind == sculk_client::messaging::MessageType::Text
-        && u64::try_from(message.sent_at_seconds).is_ok_and(|sent| sent.abs_diff(now) <= 300)
-}
 fn main() {
     if let Err(error) = run() {
-        eprintln!("{error}");
+        if let Some(local) = error.downcast_ref::<LocalFailure>() {
+            eprintln!("{local}");
+        } else {
+            eprintln!(
+                "Validation failed ({}). Use --help; no automatic retry was performed.",
+                failure_category(&error)
+            );
+        }
+        let (server, http) = status_codes(&error);
+        if let Some(code) = server {
+            eprintln!("Server status: {code}");
+        }
+        if let Some(code) = http {
+            eprintln!("HTTP status: {code}");
+        }
         std::process::exit(1);
     }
 }
 fn run() -> Result<(), Failure> {
     let args = Arguments::parse(&std::env::args().skip(1).collect::<Vec<_>>())?;
     if args.mode == Mode::Help {
-        println!("Sculk experimental connection validation\n--dry-run PATH [--report NEW_PATH]: local config/key checks only; no network\n--check-config is an alias for --dry-run\n--live PATH [--refresh] [--read-only] [--listen SECONDS | --receive-one SECONDS] [--report NEW_PATH]: explicitly authorized account only\nLive mode requires a terminal, account approval, and separate device-registration approval.\n--receive-one requires configured test_room_id and separate room consent; validates one fresh text without logging content or IDs.\n--read-only requests one LCHATLIST page; --listen 1..300 receives events and prints counts only. No messages, read marks or moderation operations are sent.\nReports contain only mode/stage/outcome and never secrets, IDs or approval codes.");
+        println!("Sculk experimental connection validation\n--dry-run PATH [--report NEW_PATH]: local config/key checks only; no network\n--check-config is an alias for --dry-run\n--live PATH [--refresh] [--read-only] [--listen SECONDS | --receive-one SECONDS] [--report NEW_PATH]: explicitly authorized account only\nLive mode requires a terminal, account approval, and separate device-registration approval.\n--receive-one requires configured test_room_id and separate room consent; validates one fresh text without logging content or IDs.\n--read-only requests one LCHATLIST page; --listen 1..300 receives events and prints counts only. No messages, read marks or moderation operations are sent.\nReports contain separate fixed-label milestones and booleans; never secrets, IDs or approval codes.");
         return Ok(());
     }
-    let stage = Cell::new("configuration");
-    let verified = Cell::new(false);
-    let received = Cell::new(false);
-    let result = attempt(&args, &stage, &verified, &received);
+    let progress = Progress::default();
+    let result = attempt(&args, &progress);
+    let milestones = progress.milestones();
+    let (server_status, http_status) = result
+        .as_ref()
+        .err()
+        .map(status_codes)
+        .unwrap_or((None, None));
     if let Some(path) = &args.report {
         write_report(
             path,
@@ -266,32 +351,31 @@ fn run() -> Result<(), Failure> {
                 } else {
                     "dry-run"
                 },
-                last_stage: stage.get(),
+                schema_version: 2,
+                last_stage: progress.stage.get(),
+                milestones,
                 outcome: if result.is_ok() {
                     "completed"
                 } else {
                     "failed"
                 },
-                live_connection_verified: verified.get(),
-                controlled_receive_verified: received.get(),
+                live_connection_verified: milestones.loginlist,
+                controlled_receive_verified: milestones.controlled_message,
                 failure_category: result.as_ref().err().map(failure_category),
+                server_status,
+                http_status,
             },
         )?;
     }
     if result.is_err() {
         eprintln!(
             "Failed stage: {}. No automatic retry was performed.",
-            stage.get()
+            progress.stage.get().label()
         );
     }
     result
 }
-fn attempt(
-    args: &Arguments,
-    stage: &Cell<&'static str>,
-    verified: &Cell<bool>,
-    received: &Cell<bool>,
-) -> Result<(), Failure> {
+fn attempt(args: &Arguments, progress: &Progress) -> Result<(), Failure> {
     let bytes = auth::read_private_file(
         args.config
             .as_ref()
@@ -301,6 +385,7 @@ fn attempt(
     let config: Configuration = serde_json::from_slice(&bytes).map_err(|_| {
         fail("invalid private configuration (required fields include server_key_sha256)")
     })?;
+    drop(bytes);
     if config.expected_user_id == 0
         || config.expected_user_id > i64::MAX as u64
         || config.email.is_empty()
@@ -345,7 +430,8 @@ fn attempt(
         allowed,
         Duration::from_secs(15),
     )?;
-    stage.set("key-identity");
+    progress.completed(Stage::Configuration);
+    progress.stage.set(Stage::ServerKey);
     let key = auth::read_private_file(&config.server_key_file, 4096)?;
     if !pin_matches(&key, &config.server_key_sha256) {
         return Err(fail(
@@ -353,6 +439,8 @@ fn attempt(
         ));
     }
     let key = ServerKey::from_pkcs1_der(&key).map_err(|_| fail("invalid RSA public key"))?;
+    progress.completed(Stage::ServerKey);
+    progress.stage.set(Stage::SystemTrust);
     let mut trust = TrustStore::empty();
     for cert in rustls_native_certs::load_native_certs().certs {
         trust.add(cert).map_err(|_| fail("invalid system CA"))?;
@@ -361,17 +449,21 @@ fn attempt(
         return Err(fail("system trust store unavailable"));
     }
     if args.mode == Mode::DryRun {
-        stage.set("local-validation-complete");
+        progress.stage.set(Stage::LocalValidationComplete);
         println!("LOCAL DRY RUN complete. No network requests, authentication or device identity creation. Live compatibility remains unverified.");
         return Ok(());
     }
-    stage.set("account-authorization");
+    progress.stage.set(Stage::AccountAuthorization);
     if !ask("Authorize this configured test account for experimental authentication and connection? No messages or moderation operations will be sent.","authorize"){return Err(fail("test-account authorization not granted; no network request"));}
+    if args.receive_one.is_some() {
+        progress.stage.set(Stage::RoomAuthorization);
+    }
     if args.receive_one.is_some() && !ask("Authorize receive-only validation in the configured test room you own or have permission to test?", "receive") {
         return Err(fail("test-room authorization not granted; no network request"));
     }
-    stage.set("device-identity");
+    progress.stage.set(Stage::DeviceIdentity);
     let identity = DeviceIdentity::load_or_create(&config.device_file)?;
+    progress.stage.set(Stage::PasswordInput);
     let password = Zeroizing::new(
         rpassword::prompt_password("Account password (hidden): ")
             .map_err(|_| fail("password prompt failed"))?,
@@ -390,23 +482,24 @@ fn attempt(
         let (cancel_tx,cancel)=tokio::sync::watch::channel(false);let signal=tokio::spawn(async move{let _=tokio::signal::ctrl_c().await;cancel_tx.send_replace(true);});
         let mut states=provider.subscribe();let observer=tokio::spawn(async move{loop{println!("auth/{}",state_name(&states.borrow_and_update()));if states.changed().await.is_err(){break;}}});
         let result=async{
-            stage.set("http-login");let credentials=match provider.login(&email,&password,cancel.clone()).await?{Some(c)=>c,None=>{
-                stage.set("registration-approval");if !ui::registration_approval(cancel.clone()).await.map_err(|_|fail("registration approval cancelled, timed out or unavailable"))?{return Err(fail("device registration not approved"));}
-                provider.approve_device_registration()?;stage.set("device-challenge");let challenge=provider.request_challenge(&email,&password,cancel.clone()).await?;
+            progress.stage.set(Stage::HttpsAuthentication);let credentials=match provider.login(&email,&password,cancel.clone()).await?{Some(c)=>c,None=>{
+                progress.stage.set(Stage::DeviceRegistrationApproval);if !ui::registration_approval(cancel.clone()).await.map_err(|_|fail("registration approval cancelled, timed out or unavailable"))?{return Err(fail("device registration not approved"));}
+                provider.approve_device_registration()?;progress.completed(Stage::DeviceRegistrationApproval);progress.stage.set(Stage::DeviceChallenge);let challenge=provider.request_challenge(&email,&password,cancel.clone()).await?;
                 ui::show_challenge(challenge.expose_code()).map_err(|_|fail("cannot display approval code privately"))?;drop(challenge);
-                stage.set("device-confirmation");provider.confirm_device(&email,&password,cancel.clone()).await?;
-                stage.set("post-registration-login");provider.login(&email,&password,cancel.clone()).await?.ok_or_else(||fail("device approval incomplete"))?
+                progress.stage.set(Stage::DeviceConfirmation);provider.confirm_device(&email,&password,cancel.clone()).await?;
+                progress.stage.set(Stage::PostRegistrationLogin);provider.login(&email,&password,cancel.clone()).await?.ok_or_else(||fail("device approval incomplete"))?
             }};
+            progress.completed(Stage::HttpsAuthentication);
             drop(password);drop(email);
-            let credentials=if args.refresh{stage.set("explicit-refresh");let next=provider.refresh(&credentials,cancel.clone()).await?;drop(credentials);next}else{credentials};
+            let credentials=if args.refresh{progress.stage.set(Stage::ExplicitRefresh);let next=provider.refresh(&credentials,cancel.clone()).await?;drop(credentials);next}else{credentials};
             if !credentials.has_server_expiration(){println!("Using an explicit local credential-age cap; server expiry was absent.");}
             let profile=provider.loco_profile();let device=Zeroizing::new(provider.device_uuid().to_owned());let token=credentials.protocol_token()?;drop(credentials);drop(provider);
             let options=Options{booking,booking_schema:BookingSchema::AgentMessenger,checkin:Protection::LocoGcm(key.clone()),chat:Protection::LocoGcm(key),tls:TlsSettings::with_roots(trust),transport:Config::default(),stage_timeout:Duration::from_secs(15),total_timeout:Duration::from_secs(60),session_lease:Duration::from_secs(300)};
-            let mut session=options.connect(&profile,token,&device,cancel.clone(),|phase,endpoint|{let name=match phase{Stage::Booking=>"booking",Stage::Checkin=>"checkin",Stage::Login=>"loginlist"};stage.set(name);println!("protocol/{name}");proxy.dial(endpoint,cancel.clone())}).await?;drop(device);
-            verified.set(true);println!("LIVE LOGINLIST acknowledged; configured account identity validated for this run.");
-            let operation=async{if args.read_only{stage.set("read-only-room-page");let page=session.chat_rooms(Cursor::default()).await?;println!("Read-only page received: {} rooms; eof={}. No personal room data recorded.",page.rooms.len(),page.eof);}
+            let mut session=options.connect(&profile,token,&device,cancel.clone(),|phase,endpoint|{progress.protocol_enter(phase);println!("protocol/{}",progress.stage.get().label());proxy.dial(endpoint,cancel.clone())}).await?;drop(device);
+            progress.completed(Stage::Loginlist);println!("LIVE LOGINLIST acknowledged; configured account identity validated for this run.");
+            let operation=async{if args.read_only{progress.stage.set(Stage::RoomPage);let page=session.chat_rooms(Cursor::default()).await?;println!("Read-only page received: {} rooms; eof={}. No personal room data recorded.",page.rooms.len(),page.eof);}
                 if let Some(seconds)=args.listen {
-                    stage.set("receive-events");
+                    progress.stage.set(Stage::MessageReception);
                     let mut events=session.message_events()?;
                     let until=tokio::time::Instant::now()+Duration::from_secs(seconds);
                     let (mut messages,mut unknown,mut malformed)=(0_u64,0_u64,0_u64);
@@ -421,29 +514,22 @@ fn attempt(
                     println!("Receive window complete: messages={messages}; unknown={unknown}; malformed={malformed}. No content or identities recorded.");
                 }
                 if let Some(seconds)=args.receive_one {
-                    stage.set("controlled-receive");
                     let room=test_room.ok_or_else(||fail("missing authorized test room"))?;
-                    let mut events=session.message_events()?;
-                    println!("READY: send one controlled text in the authorized room using the official client. No content or identifiers will be printed.");
-                    let deadline=tokio::time::Instant::now()+Duration::from_secs(seconds);
-                    loop {tokio::select!{biased;
-                        _=tokio::time::sleep_until(deadline)=>return Err(fail("controlled receive timed out")),
-                        event=events.recv(cancel.clone())=>match event? {
-                            MessageEvent::Message(message) if message.room==room=>{
-                                let now=std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).map_err(|_|fail("system clock unavailable"))?.as_secs();
-                                if !valid_controlled_message(&message,room,now) {return Err(fail("controlled message failed room, ID, timestamp or type validation"));}
-                                received.set(true);println!("Controlled receive passed: room, log ID, sender ID, timestamp and text type validated. No content or identities recorded.");break;
-                            },
-                            MessageEvent::Message(_)=>{},
-                            MessageEvent::Unknown(_)|MessageEvent::Malformed(_)=>return Err(fail("unsupported event during controlled validation")),
-                        }
-                    }}
+                    validation::receive_one(&session,room,Duration::from_secs(seconds),cancel.clone(),progress).await?;
                 }
                 Ok::<(),Failure>(())};
             let mut read_cancel=cancel.clone();
             let read=tokio::select!{biased;_=ui::cancelled(&mut read_cancel)=>Err(fail("post-login validation cancelled")),result=operation=>result};
-            if read.is_ok(){stage.set("disconnect");}session.disconnect().await;
-            read?;stage.set("complete");println!("Connection closed cleanly. No messages or moderation operations performed.");Ok::<(),Failure>(())
+            let failure_stage=progress.stage.get();
+            progress.stage.set(Stage::Shutdown);
+            let mut shutdown_cancel=cancel.clone();
+            let closed=tokio::select!{biased;
+                _=ui::cancelled(&mut shutdown_cancel)=>Err::<(),Failure>(fail("shutdown interrupted; clean close unverified")),
+                result=session.disconnect_checked()=>result.map_err(|e|Box::new(e) as Failure),
+            };
+            if closed.is_ok(){progress.completed(Stage::Shutdown);}
+            if let Err(error)=read {progress.stage.set(failure_stage);return Err(error);}
+            closed?;progress.stage.set(Stage::Complete);println!("Checked local shutdown completed. No messages or moderation operations performed.");Ok::<(),Failure>(())
         }.await;
         observer.abort();let _=observer.await;signal.abort();let _=signal.await;result
     })
@@ -484,11 +570,15 @@ mod tests {
         assert!(!pin_matches(b"changed", &pin));
         let report = serde_json::to_string(&Report {
             mode: "dry-run",
-            last_stage: "key-identity",
+            schema_version: 2,
+            last_stage: Stage::ServerKey,
+            milestones: Milestones::default(),
             outcome: "failed",
             live_connection_verified: false,
             controlled_receive_verified: false,
             failure_category: Some("server-rejected"),
+            server_status: Some(-203),
+            http_status: None,
         })
         .unwrap();
         for secret in ["token", "password", "approval", "userId", "email"] {
@@ -515,22 +605,79 @@ mod tests {
             .insert("chatId", 42_i64);
         let packet = Packet::from_document(0, Command::new("MSG").unwrap(), &doc).unwrap();
         let message = sculk_client::messaging::Message::from_packet(packet).unwrap();
-        assert!(valid_controlled_message(&message, room, 1700000000));
-        assert!(!valid_controlled_message(&message, room, 1700001000));
-        assert!(!valid_controlled_message(
+        assert!(validation::valid_controlled_message(
+            &message, room, 1700000000
+        ));
+        assert!(!validation::valid_controlled_message(
+            &message, room, 1700001000
+        ));
+        assert!(!validation::valid_controlled_message(
             &message,
             sculk_client::read_only::RoomId::new(43).unwrap(),
             1700000000
         ));
     }
+    #[cfg(unix)]
+    #[test]
+    fn dry_run_validates_local_pin_without_identity_creation_or_live_milestones() {
+        use std::os::unix::fs::{DirBuilderExt, OpenOptionsExt};
+        let directory = std::env::temp_dir().join(format!("sculk-dry-run-{}", std::process::id()));
+        std::fs::DirBuilder::new()
+            .mode(0o700)
+            .create(&directory)
+            .unwrap();
+        let key = include_bytes!("../../../tests/fixtures/documented-server-public.der");
+        let key_path = directory.join("public.der");
+        let config_path = directory.join("config.json");
+        let identity = directory.join("not-created.device-identity");
+        let mut file = std::fs::OpenOptions::new()
+            .write(true)
+            .create_new(true)
+            .mode(0o600)
+            .open(&key_path)
+            .unwrap();
+        file.write_all(key).unwrap();
+        let config = serde_json::json!({"expected_user_id":42,"email":"synthetic@example.invalid","device_file":identity,"server_key_file":key_path,"server_key_sha256":format!("{:x}",Sha256::digest(key)),"tcp_proxy_host":"127.0.0.1","tcp_proxy_port":1,"allowed_endpoints":[{"host":"booking-loco.kakao.com","port":443}],"app_version":"25.9.2","os_version":"13","api_level":"33","device_name":"SM-T870","test_room_id":42});
+        let mut file = std::fs::OpenOptions::new()
+            .write(true)
+            .create_new(true)
+            .mode(0o600)
+            .open(&config_path)
+            .unwrap();
+        serde_json::to_writer(&mut file, &config).unwrap();
+        drop(file);
+        let args =
+            Arguments::parse(&["--dry-run".into(), config_path.to_str().unwrap().into()]).unwrap();
+        let progress = Progress::default();
+        attempt(&args, &progress).unwrap();
+        let m = progress.milestones();
+        assert!(m.configuration && m.server_key);
+        assert!(
+            !m.https_authentication
+                && !m.getconf
+                && !m.loginlist
+                && !m.controlled_message
+                && !m.shutdown
+        );
+        assert!(!identity.exists());
+        std::fs::remove_dir_all(&directory).unwrap();
+    }
     #[test]
     fn diagnostic_categories_never_include_remote_content() {
         let e: Failure = auth::Error::InvalidCredentials(30).into();
         assert_eq!(failure_category(&e), "credentials-rejected");
-        let e: Failure = sculk_client::connect::Error::Rejected(Stage::Checkin, -203).into();
+        assert_eq!(status_codes(&e), (Some(30), None));
+        let e: Failure =
+            sculk_client::connect::Error::Rejected(sculk_client::connect::Stage::Checkin, -203)
+                .into();
         assert_eq!(failure_category(&e), "server-rejected");
         let e = fail("secret peer payload must never be reported");
         assert_eq!(failure_category(&e), "local-validation-or-operation");
+        assert_eq!(status_codes(&e), (None, None));
+        let e: Failure = auth::Error::Http(403).into();
+        assert_eq!(status_codes(&e), (None, Some(403)));
+        let e: Failure = auth::Error::AccountMismatch.into();
+        assert_eq!(status_codes(&e), (None, None));
     }
     #[tokio::test]
     async fn cancellation_waiter_is_level_triggered() {
