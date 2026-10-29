@@ -118,6 +118,14 @@ impl Room {
     pub fn generation(&self) -> u64 {
         self.generation
     }
+    /// Selected room for application adapters; not an OpenChat link identity.
+    pub fn room_id(&self) -> RoomId {
+        self.room
+    }
+    /// Actual current session observation, without starting authentication.
+    pub fn session_state(&self) -> Option<State> {
+        self.session.as_ref().map(Session::state)
+    }
     /// Observe processing/dedup/gap state.
     pub fn tracker(&self) -> &Tracker {
         &self.tracker
@@ -295,12 +303,17 @@ impl Room {
     /// Permanently shut down this manager. Dropping an active request/session
     /// aborts the existing bounded driver; no background reconnect task survives.
     pub async fn shutdown(&mut self) {
+        let _ = self.shutdown_checked().await;
+    }
+    /// Terminal cleanup with explicit transport-close evidence for applications.
+    pub async fn shutdown_checked(&mut self) -> Result<(), crate::ShutdownError> {
         self.closed = true;
         self.events = None;
         self.tracker.abandon_page();
         if let Some(mut session) = self.session.take() {
-            session.disconnect().await;
+            session.disconnect_checked().await?;
         }
+        Ok(())
     }
     /// Current committed boundary, useful for a new explicit recovery request.
     pub fn cursor(&self) -> Cursor {

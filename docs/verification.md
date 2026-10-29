@@ -608,3 +608,57 @@ Changed files:
 - `examples/auth-client/src/main.rs`
 
 - `examples/auth-client/src/validation.rs`
+
+## Phase 9 — bot framework (2026-10-29)
+
+Verified local commits `2cead9f` and `3d0325e` before work. Baseline all-feature
+workspace tests: **122 passed**. No previously completed protocol/authentication,
+message/history, crypto or recovery component was replaced.
+
+Final checks (locked dependencies):
+
+| Check | Result |
+|---|---|
+| `cargo fmt --all -- --check` | Passed |
+| Strict workspace Clippy, all targets/all features | Passed |
+| `cargo test --workspace --all-features --locked` | **141 passed** including one API doctest |
+| `cargo test --workspace --locked` | **80 passed** including one API doctest |
+| `cargo test -p sculk-client --no-default-features --locked` | **15 passed** |
+| Release workspace build, all features | Passed |
+| Warnings-denied workspace rustdoc, all features | Passed |
+| Offline `sculk-basic-bot` executable | Two mock replies, two commands, clean drain/cleanup |
+| Synthetic dispatch/command benchmark | Completed; [measurements](performance.md) |
+| Existing fuzz target, locked `cargo check` | Passed (no Phase 9 fuzz campaign) |
+
+The bot adds 18 integration tests under all features (16 under default features)
+and one executable API doctest. Coverage includes exact prefixes, aliases/case,
+quoted Unicode arguments and limits, defaults/grants/denials/room scope, atomic
+registration, concurrent producers, global/per-room FIFO, duplicate IDs, unknown
+commands/packets, malformed MSG, lag/sync/state notifications, slow handlers,
+overflow, returned errors, cancellation before run and after EOF, dropping an
+active run, oversized events, explicit mock receipts and cleanup timeout/failure.
+The optional managed adapter has both an inactive-manager test and a local TLS
+message/connection-loss integration test. The latter uses synthetic provider
+success and is **not live authentication or LOCO compatibility evidence**.
+
+The new bot dependency enables messaging/synchronization in workspace default
+feature unification. Consequently the default workspace now exercises additional
+client feature tests. An existing read-only test imported `bytes` only made
+available by the unrelated protocol-connect feature; changing that import to the
+already-required `tokio_util::bytes` re-export fixes isolated feature compilation
+without changing assertions. Client-only no-feature coverage remains intact.
+
+New files: `crates/sculk-bot/{Cargo.toml,src/lib.rs,src/runtime.rs,src/command.rs,
+src/permissions.rs,src/source.rs,tests/framework.rs,benches/dispatch.rs}`,
+`examples/basic-bot/{Cargo.toml,src/main.rs}` and `docs/bot.md`.
+Updated workspace manifest/lock, managed-client room/state observations and checked
+shutdown, read-only test import, CI example execution, README, architecture,
+compatibility, performance, verification and changelog. Registry package versions
+were not upgraded; the lock adds only workspace package/dependency records.
+
+No Phase 9 live account/network validation, WRITE, registration, moderation,
+checkpoint auto-commit, package publication or release was performed. No new
+cryptography or advisory suppression was added; Phase 8's RSA advisory/exposure
+assessment remains applicable. No bot command/history replay or implicit reconnect
+is performed. Live compatibility blockers remain as documented in Phase 8. Work is
+committed locally; pushing requires separate explicit authorization.

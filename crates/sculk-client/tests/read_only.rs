@@ -1,7 +1,6 @@
 #![cfg(feature = "read-only")]
 mod support;
 use bson::doc;
-use bytes::BytesMut;
 use futures_util::{SinkExt, StreamExt};
 use sculk_client::{
     read_only::{Cursor, Error, RoomId},
@@ -11,6 +10,7 @@ use sculk_client::{
 use sculk_protocol::{Command, LocoCodec, Packet};
 use std::time::Duration;
 use tokio::sync::watch;
+use tokio_util::bytes::BytesMut;
 use tokio_util::codec::{Decoder, Encoder, Framed};
 const ID: i64 = 9_007_199_254_740_993;
 fn fixture(bytes: &[u8]) -> Packet {

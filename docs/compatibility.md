@@ -1,5 +1,15 @@
 # Compatibility matrix
 
+## Phase 9 framework status (2026-10-29)
+
+`sculk-bot` and `sculk-basic-bot` are **offline tested**: commands, permissions,
+quoted arguments, bounded queues, ordering, cancellation and event forwarding.
+The optional managed adapter also runs against actual local TLS with a synthetic
+grant. This supplies no new KakaoTalk compatibility evidence. Unknown/malformed
+events remain preserved; no join/leave/kick/moderation schema is invented.
+No built-in live WRITE adapter, account operation or live test was added. Phase 8
+authorization/key/profile/network blockers remain. See [bot limitations](bot.md).
+
 No live KakaoTalk test has been performed. All passing tests are offline.
 
 | Capability | Implemented | Offline tested | Live tested | Status |

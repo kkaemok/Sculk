@@ -11,6 +11,17 @@ limits, raw diagnostic events, clean shutdown, and finite connector retries. Opt
 `messaging` adds typed incoming MSG events and an offline text-WRITE foundation.
 An optional experimental AES-GCM record codec has offline cryptographic tests.
 
+`sculk-bot` adds bounded async events, startup commands/aliases, quoted arguments,
+application permissions and cancellation above `sculk-client`:
+
+```sh
+cargo run -p sculk-basic-bot --locked
+```
+
+This offline example demonstrates `!ping`, `!help` and explicit mock replies.
+See the [public bot API and future script boundary](docs/bot.md). Live WRITE stays
+unverified; no live sender or automatic authentication is added.
+
 ## Run the offline example
 
 Install stable Rust with rustfmt and clippy, then from this checkout:

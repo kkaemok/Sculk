@@ -1,5 +1,17 @@
 # Architecture
 
+## Phase 9 bot layer
+
+`sculk-bot -> sculk-client -> sculk-protocol` is a one-way dependency chain.
+The bot owns application dispatch, startup command lookup, permission checks,
+context and lifecycle. Transport/authentication/chat/history stay in client.
+One intake future and one sequential worker share a finite queue, without spawned
+bot tasks; overflow terminates explicitly. See [bot architecture/API](bot.md) for
+ordering, cancellation, memory bounds and best-effort delivery. The optional
+managed adapter accepts an owner-approved session and never reconnects or commits
+checkpoints. Future `sculk-script` uses these same APIs with one implementation
+for equivalent `.sculk`/`.sc` sources; Phase 9 adds no interpreter.
+
 ## Implemented vertical slice
 
 `sculk-protocol` owns a 22-byte historical LOCO header and BSON payloads.

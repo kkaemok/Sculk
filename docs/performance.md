@@ -309,3 +309,35 @@ setup/cleanup 416.7 us including certificate generation and synthetic grant.
 No HTTP auth, server RTT or live protocol reconnection is included in that last
 number. Earlier phase samples remain historical measurements, not controlled
 before/after comparisons or claims of improvement.
+
+## Phase 9 bot dispatch — 2026-10-29
+
+Reproduce with `cargo bench -p sculk-bot --bench dispatch --locked`. One release
+run on the same managed x86-64 development host (Rust 1.99.1, default release
+settings, current-thread Tokio); **not an Oracle 1/8-OCPU/1-GB measurement**.
+200,000 operations per case, in process, with no network or outbound adapter.
+
+| Dispatch capacity | One generic event + no-op handler | 512-byte text command + argument access |
+|---|---:|---:|
+| 8 | 929.3 ns/event | 2758.2 ns/event |
+| 16 | 936.3 ns/event | 2768.9 ns/event |
+| 32 | 934.7 ns/event | 2757.1 ns/event |
+
+Standalone quoted-argument parsing: **130.1 ns/operation**, using the short
+Unicode input in the benchmark. Generic dispatch uses a synthetic Lagged event,
+without message parsing. Command dispatch cycles 257 fully consistent, pre-parsed
+synthetic packets, exceeding the default 256-ID dedup window and exercising its
+bounded eviction. Payloads are prepared outside timing. Timing includes source
+futures, queue admission/cooperative scheduling, context, command lookup, parsing,
+dedup and a no-op command accessing arguments. It excludes BSON parsing, explicit
+permission rules, authentication, I/O, user work, TLS, synchronization and live RTT.
+The test checks all 200,000 callbacks complete; overflow/slow-callback behavior is
+covered separately by deterministic tests. These are single-run synthetic costs,
+not latency percentiles, production throughput, target sizing or an improvement
+claim. No additional target-memory or idle-CPU claim is made from this benchmark.
+
+Bot dispatch retains at most capacity + active/intake events, each admitted with
+an explicit body-size cap. The source's queue and existing client ring are separate
+bounds, as are dedup/registration tables. Application-retained contexts and handler
+work must be budgeted separately. No bot background task or idle timer is created.
+EOF/cancellation, failure and memory ownership are specified in [bot.md](bot.md).

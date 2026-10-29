@@ -1,5 +1,5 @@
 [workspace]
-members = ["crates/*", "examples/basic-client", "examples/auth-client"]
+members = ["crates/*", "examples/basic-client", "examples/auth-client", "examples/basic-bot"]
 resolver = "2"
 
 [workspace.package]
@@ -17,3 +17,4 @@ tokio-util = { version = "0.7", features = ["codec"] }
 futures-util = { version = "0.3", features = ["sink"] }
 sculk-protocol = { version = "0.1.0", path = "crates/sculk-protocol" }
 sculk-client = { version = "0.1.0", path = "crates/sculk-client" }
+sculk-bot = { version = "0.1.0", path = "crates/sculk-bot" }

@@ -1,0 +1,13 @@
+[package]
+name = "sculk-basic-bot"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+publish = false
+
+[dependencies]
+sculk-bot.workspace = true
+sculk-client = { workspace = true, features = ["messaging"] }
+sculk-protocol.workspace = true
+bson.workspace = true
+tokio.workspace = true

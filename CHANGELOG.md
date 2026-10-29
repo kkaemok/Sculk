@@ -1,5 +1,17 @@
 # Changelog
 
+## Phase 9 — 2026-10-29
+
+- Add `sculk-bot`: typed events/context, bounded FIFO dispatch without spawned
+  tasks, startup commands/aliases, quoted arguments, permissions and error routing.
+- Add bounded recent-ID suppression, explicit overflow/source/cleanup outcomes,
+  cancellation during handlers/EOF drain and optional managed-client intake.
+- Add checked manager shutdown and room/state observations; preserve explicit
+  authentication/recovery policy without automatic login or command replay.
+- Add offline ping/help bot with mock receipts, tests, synthetic benchmarks,
+  public API documentation and CI execution; no live compatibility claim.
+- Reserve the shared `.sculk`/`.sc` script host boundary without adding a language.
+
 ## 0.1.0 — unreleased
 
 Phase 5:

@@ -1536,6 +1536,17 @@ dependencies = [
 ]
 
 [[package]]
+name = "sculk-basic-bot"
+version = "0.1.0"
+dependencies = [
+ "bson",
+ "sculk-bot",
+ "sculk-client",
+ "sculk-protocol",
+ "tokio",
+]
+
+[[package]]
 name = "sculk-basic-client"
 version = "0.1.0"
 dependencies = [
@@ -1544,6 +1555,21 @@ dependencies = [
  "sculk-client",
  "sculk-protocol",
  "tokio",
+ "tokio-util",
+]
+
+[[package]]
+name = "sculk-bot"
+version = "0.1.0"
+dependencies = [
+ "bson",
+ "futures-util",
+ "rcgen",
+ "sculk-client",
+ "sculk-protocol",
+ "thiserror",
+ "tokio",
+ "tokio-rustls",
  "tokio-util",
 ]
 
