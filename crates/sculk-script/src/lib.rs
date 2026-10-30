@@ -12,11 +12,13 @@
 //! // Supply an explicit Outbound adapter and a bounded source to run it.
 //! assert_eq!(program.handlers().len(), 1);
 //! ```
+pub mod addon;
 mod ast;
 mod compiler;
 mod lexer;
 mod parser;
 mod runtime;
+pub use ast::{Type, Value};
 pub use compiler::{CompiledScripts, Compiler, HandlerInfo};
 pub use runtime::{Execution, ExecutionError, RuntimeDiagnostic, RuntimeError};
 use std::{fmt, path::Path, time::Duration};
@@ -55,6 +57,8 @@ pub enum Category {
     Command,
     Unsupported,
     Limit,
+    Addon,
+    Capability,
 }
 /// Bounded compiler diagnostic. Source excerpts require explicit caller action.
 #[derive(Clone, Debug, PartialEq, Eq)]

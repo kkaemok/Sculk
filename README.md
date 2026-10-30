@@ -34,6 +34,16 @@ cargo run -p sculk-script-bot --locked
 
 See the [scripting tutorial, syntax and runtime restrictions](docs/scripting.md).
 
+Statically linked Rust addons can register typed expressions, conditions, async
+effects and aliases/filters over existing bot events. Syntax resolves at compile
+time; costs, capabilities and invocation leases share the existing runtime.
+See the [addon API and native trust boundary](docs/addons.md), or run its offline
+synthetic score example:
+
+```sh
+cargo run -p sculk-addon-bot --locked
+```
+
 ## Run the offline example
 
 Install stable Rust with rustfmt and clippy, then from this checkout:

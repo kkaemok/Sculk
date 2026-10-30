@@ -1,3 +1,4 @@
+use crate::addon::{Capability, Entry, Registry, SyntaxId};
 use crate::{
     ast::{self, Declaration, ExprKind, StatementKind, Type, Value},
     lexer, parser, Category, Diagnostic, Diagnostics, Limits, Source, Span,
@@ -22,6 +23,7 @@ pub(crate) enum Expression {
     Equal(Box<Expression>, Box<Expression>, bool),
     And(Box<Expression>, Box<Expression>),
     Or(Box<Expression>, Box<Expression>),
+    Addon(Arc<Entry>, Vec<Expression>),
 }
 pub(crate) enum Operation {
     Reply(Expression),
@@ -29,6 +31,7 @@ pub(crate) enum Operation {
     FalseJump(Expression, usize),
     Jump(usize),
     Stop,
+    Addon(Arc<Entry>, Vec<Expression>),
 }
 pub(crate) struct Instruction {
     pub operation: Operation,
@@ -47,6 +50,7 @@ pub(crate) struct Handler {
     pub kind: EventKind,
     pub command: Option<CommandSpec>,
     pub code: Vec<Instruction>,
+    pub event_addon: Option<Arc<Entry>>,
     pub locals: usize,
 }
 pub(crate) struct Program {
@@ -54,6 +58,7 @@ pub(crate) struct Program {
     pub limits: Limits,
     pub case_sensitive: bool,
     pub units: usize,
+    pub capabilities: Vec<Capability>,
 }
 /// Lightweight metadata without script literals or executable internals.
 pub struct HandlerInfo<'a> {
@@ -149,6 +154,8 @@ pub struct Compiler {
     limits: Limits,
     case_sensitive: bool,
     defaults: Vec<String>,
+    registry: Arc<Registry>,
+    capabilities: Vec<Capability>,
 }
 impl Default for Compiler {
     fn default() -> Self {
@@ -161,7 +168,21 @@ impl Compiler {
             limits,
             case_sensitive: true,
             defaults: vec!["!".into()],
+            registry: Arc::new(Registry::new()),
+            capabilities: Vec::new(),
         }
+    }
+    /// Freeze validated native registrations. Compiled calls retain resolved
+    /// implementations directly; no registry lookup occurs during execution.
+    pub fn with_registry(mut self, registry: Registry) -> Self {
+        self.registry = Arc::new(registry);
+        self
+    }
+    /// Explicit host grants, separate from command permissions. Facility access
+    /// is also restricted to each registration's own declared requirements.
+    pub fn capabilities(mut self, capabilities: impl IntoIterator<Item = Capability>) -> Self {
+        self.capabilities = capabilities.into_iter().collect();
+        self
     }
     /// Must match the consuming bot; Unicode lowercase, without normalization.
     pub fn case_sensitive(mut self, value: bool) -> Self {
@@ -251,6 +272,15 @@ impl Compiler {
                 "invalid limits or script count",
             )]);
         }
+        if self.capabilities.len() > 64
+            || self.capabilities.iter().collect::<HashSet<_>>().len() != self.capabilities.len()
+        {
+            return Err(vec![diagnostic(
+                "<compiler>",
+                Category::Capability,
+                "capability grants must be unique and bounded to 64",
+            )]);
+        }
         let mut handlers = Vec::new();
         let mut errors = Vec::new();
         let mut units = 0;
@@ -297,12 +327,17 @@ impl Compiler {
                 continue;
             }
             let lines = lexer::lex(source.text, &mut d);
-            let script = parser::parse(&lines, &mut d);
+            let script = parser::parse(&lines, &mut d, &self.registry);
             let defaults = script.prefixes.as_ref().unwrap_or(&self.defaults);
             validate_prefixes(defaults, span, &mut d);
             for declaration in script.declarations {
-                let (kind, body, span, spec) = match declaration {
-                    Declaration::Event { kind, body, span } => (kind, body, span, None),
+                let (kind, body, span, spec, event_addon) = match declaration {
+                    Declaration::Event {
+                        kind,
+                        body,
+                        span,
+                        addon,
+                    } => (kind, body, span, None, addon),
                     Declaration::Command {
                         name,
                         explicit,
@@ -384,6 +419,7 @@ impl Compiler {
                                 permissions: ids,
                                 required: arguments.len(),
                             }),
+                            None,
                         )
                     }
                 };
@@ -395,7 +431,10 @@ impl Compiler {
                     kind,
                     arguments: spec.as_ref().map(|s| s.required),
                     units: &mut units,
+                    registry: &self.registry,
+                    capabilities: &self.capabilities,
                 };
+                let event_addon = event_addon.and_then(|id| semantic.entry(id, span));
                 semantic.charge(span);
                 semantic.block(&body, 1);
                 handlers.push(Handler {
@@ -405,6 +444,7 @@ impl Compiler {
                     command: spec,
                     code: semantic.code,
                     locals: semantic.locals,
+                    event_addon,
                 });
             }
             errors.extend(d.errors);
@@ -426,6 +466,7 @@ impl Compiler {
                 limits: self.limits.clone(),
                 case_sensitive: self.case_sensitive,
                 units,
+                capabilities: self.capabilities.clone(),
             })))
         } else {
             Err(errors)
@@ -474,8 +515,52 @@ struct Semantic<'a, 'b> {
     kind: EventKind,
     arguments: Option<usize>,
     units: &'a mut usize,
+    registry: &'a Registry,
+    capabilities: &'a [Capability],
 }
 impl Semantic<'_, '_> {
+    fn entry(&mut self, id: SyntaxId, span: Span) -> Option<Arc<Entry>> {
+        let entry = self.registry.entry(id).clone();
+        if entry
+            .syntax
+            .capabilities
+            .iter()
+            .any(|c| !self.capabilities.contains(c))
+        {
+            self.d.push(
+                span,
+                Category::Capability,
+                "addon requires a capability not granted by the host",
+            );
+            return None;
+        }
+        Some(entry)
+    }
+    fn arguments(
+        &mut self,
+        entry: &Entry,
+        args: &[ast::Expr],
+        depth: usize,
+    ) -> Option<Vec<Expression>> {
+        if args.len() != entry.syntax.parameters.len() {
+            return None;
+        }
+        let mut compiled = Vec::new();
+        for (arg, parameter) in args.iter().zip(&entry.syntax.parameters) {
+            let (e, ty) = self.expr(arg, depth + 1)?;
+            if ty != parameter.ty {
+                self.d.push(
+                    arg.span,
+                    Category::Type,
+                    "addon parameter type does not match its registered signature",
+                );
+                return None;
+            }
+            compiled.push(e);
+        }
+        Some(compiled)
+    }
+
     fn charge(&mut self, span: Span) -> bool {
         *self.units += 1;
         if *self.units > self.d.limits.instructions {
@@ -548,6 +633,13 @@ impl Semantic<'_, '_> {
                         self.emit(span, Operation::Set(slot, e));
                     }
                 }
+                StatementKind::Addon(id, args) => {
+                    if let Some(entry) = self.entry(*id, span) {
+                        if let Some(args) = self.arguments(&entry, args, 1) {
+                            self.emit(span, Operation::Addon(entry, args));
+                        }
+                    }
+                }
                 StatementKind::Stop => self.emit(span, Operation::Stop),
                 StatementKind::If(condition, yes, no) => {
                     let Some((condition, Type::Boolean)) = self.expr(condition, 1) else {
@@ -595,6 +687,19 @@ impl Semantic<'_, '_> {
             return None;
         }
         Some(match &expr.kind {
+            ExprKind::Addon(id, args) => {
+                let entry = self.entry(*id, span)?;
+                let args = self.arguments(&entry, args, depth)?;
+                let Some(ty) = entry.syntax.returns else {
+                    self.d.push(
+                        span,
+                        Category::Addon,
+                        "effect cannot be used as an expression",
+                    );
+                    return None;
+                };
+                (Expression::Addon(entry, args), ty)
+            }
             ExprKind::Literal(value) => {
                 if let Value::String(s) = value {
                     if s.len() > self.d.limits.string_bytes {
@@ -614,7 +719,7 @@ impl Semantic<'_, '_> {
                     );
                     return None;
                 };
-                (Expression::Local(*slot), ty.clone())
+                (Expression::Local(*slot), *ty)
             }
             ExprKind::Name(name) => match name.as_str() {
                 "message" if self.kind == EventKind::Message => (Expression::Message, Type::String),

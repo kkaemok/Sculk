@@ -1,5 +1,15 @@
 # Compatibility matrix
 
+## Phase 11 addon status (2026-10-30)
+
+Typed statically linked Rust addons are **offline tested** with the shared compiler,
+bot callbacks, prefix/argument/permission system and both file extensions. Syntax
+resolves before execution; event aliases only filter existing bot kinds. Synthetic
+reputation scores and local predicates are not KakaoTalk roles or new server events.
+Capability grants restrict Sculk facilities but do not sandbox native Rust.
+No dynamic loading, live outbound adapter, account operation or new live evidence
+was added. Existing owner/key/profile/network blockers remain. [Limits/trust](addons.md).
+
 ## Phase 10 scripting status (2026-10-30)
 
 `sculk-script` and `sculk-script-bot` are **offline tested**. Both supported file

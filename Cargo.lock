@@ -1516,6 +1516,17 @@ dependencies = [
 ]
 
 [[package]]
+name = "sculk-addon-bot"
+version = "0.1.0"
+dependencies = [
+ "bson",
+ "sculk-bot",
+ "sculk-protocol",
+ "sculk-script",
+ "tokio",
+]
+
+[[package]]
 name = "sculk-auth-client"
 version = "0.1.0"
 dependencies = [

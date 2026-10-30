@@ -719,3 +719,50 @@ an untrusted-path service. Runtime errors contain safe metadata, while source
 excerpts require explicit host opt-in. No real KakaoTalk login, WRITE, moderation,
 crates publication or release occurred. Changes are committed locally; pushing
 requires separate authorization.
+
+## Phase 11 — typed native registry (2026-10-30)
+
+Verified baseline `ae08112`; all **165 pre-change tests passed** before modification.
+No low-level protocol, authentication, messaging, synchronization/recovery or bot
+implementation was replaced. Phase 10 syntax/extension/prefix/permission behavior
+continues through the same compiler/executor and bot dispatch.
+
+| Check | Outcome |
+|---|---|
+| Workspace and standalone fuzz formatting | Passed |
+| Strict workspace Clippy, all targets/features | Passed |
+| Locked all-feature workspace tests | **186 passed**, including three API doctests |
+| Locked default workspace tests | **125 passed**, including three API doctests |
+| Release build, all features | Passed |
+| Warnings-denied rustdoc, all features | Passed |
+| Offline `sculk-addon-bot` | Synthetic score 42, explicit mock reply, no failures, clean cleanup |
+| Decode/script/addon fuzz targets, locked cargo check | Passed |
+| Compiler with static addons fuzz campaign | **280,715 runs / 31 s**, no crash, 512-MB cap |
+| Registration/compiler fuzz final campaign | **388,911 runs / 31 s**, no crash, 512-MB cap |
+| Native/builtin/addon benchmark | Completed; measurements in performance.md |
+
+The 20 addon integration tests cover validated metadata/no compile-time callback
+execution, duplicates/ambiguity/builtin conflicts, parameter/result types and
+locations, capabilities and undeclared-facility rejection, exact Int64 identity,
+repeated declared costs, actual facility costs, ignored-budget-error latching,
+cooperative work/overflow, output limits, async cancellation/deadline/drop, revoked
+retained contexts, unknown-delivery send cancellation/no replay, returned-error
+isolation, native reply counters, Unicode/both extensions, bounded registration
+and used/unused implementation retention. The public API adds a compiling Rust
+example. All Phase 1–10 regressions remain. Fuzzing tests compilation/registration,
+not arbitrary trusted Rust behavior, every async schedule or native-code sandboxing.
+
+Changed files: sculk-script's new addon/context modules, AST/compiler/parser/runtime
+integration and public primitive types, addon tests/benchmark; new examples/addon-bot
+with its actual `.sculk` script; existing script fuzz target plus registration fuzz
+manifest/target; workspace/example lock records and CI execution; README, changelog,
+architecture, compatibility, scripting, security, verification, performance and new
+docs/addons.md. No new registry dependency or package version upgrade was needed.
+
+Native grants constrain the restricted Sculk API, not native Rust itself. There is
+no credential/raw stream/filesystem/HTTP/session accessor, dynamic loading, new
+connection owner, background task, database or VM. Positive declared cost does not
+replace runtime budgets/timeouts or author cooperation. No live KakaoTalk account
+operation/WRITE/moderation, publication, release or advisory suppression occurred.
+Existing RSA advisory assessment and live owner/key/profile/network blockers remain.
+Changes are committed locally; pushing requires separate authorization.

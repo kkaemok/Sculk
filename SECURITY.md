@@ -1,5 +1,13 @@
 # Security considerations
 
+Phase 11 statically linked Rust addons are trusted application code. Capability
+grants gate restricted Sculk APIs and cannot sandbox native syscalls, captured state,
+credentials, blocking work, panics, allocations or tasks. No raw credential, stream,
+filesystem, HTTP or session accessor is provided. Facility operations share the
+script budget, cooperative async work retains deadlines/cancellation, and callback
+completion/drop revokes SDK contexts. Native authors must return errors, yield and
+bound their own work. See [addon security](docs/addons.md).
+
 This unofficial experimental SDK may become incompatible with KakaoTalk and
 using unofficial clients may lead to account restrictions. No bypass of device
 verification, account controls, or service enforcement is provided.

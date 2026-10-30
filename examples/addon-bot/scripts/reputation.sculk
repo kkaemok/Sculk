@@ -1,0 +1,5 @@
+# All scores and event filtering in this example are synthetic local policy.
+on synthetic report:
+    set {_score} to reputation of sender
+    if trusted score {_score}:
+        announce score {_score}

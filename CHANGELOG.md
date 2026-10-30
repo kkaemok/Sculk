@@ -1,5 +1,18 @@
 # Changelog
 
+## Phase 11 — 2026-10-30
+
+- Add a bounded typed Rust syntax registry for expressions, conditions, async
+  effects and aliases/filters over existing bot event kinds.
+- Resolve patterns at compilation, reject ambiguity/builtin conflicts, validate
+  parameter/result types and retain only used native implementations.
+- Add explicit host/registration grants, restricted expiring contexts and shared,
+  latched metering for repeated native facility operations.
+- Preserve existing dispatch, prefixes, permissions, limits and extension semantics;
+  no dynamic loading, native sandbox, second dispatcher or live service claim.
+- Add offline addon bot, tests, compiler/registration fuzz coverage, native/builtin/
+  addon benchmarks, memory-retention checks, CI execution and documentation.
+
 ## Phase 10 — 2026-10-30
 
 - Add `sculk-script`: one lexer/parser, typed AST, semantic compiler and bounded

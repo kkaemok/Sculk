@@ -20,3 +20,7 @@ stats_alloc = "0.1"
 [[bench]]
 name = "runtime"
 harness = false
+
+[[bench]]
+name = "addons"
+harness = false

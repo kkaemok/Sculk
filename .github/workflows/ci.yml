@@ -18,6 +18,7 @@ jobs:
       - run: cargo run -p sculk-basic-client --locked
       - run: cargo run -p sculk-basic-bot --locked
       - run: cargo run -p sculk-script-bot --locked
+      - run: cargo run -p sculk-addon-bot --locked
       - run: cargo run -p sculk-auth-client --features live --locked -- --help
       - run: cargo doc --workspace --all-features --no-deps --locked
         env:

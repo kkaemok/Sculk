@@ -1,3 +1,4 @@
+use crate::addon::{Group, Registry};
 use crate::{
     ast::*,
     lexer::{self, Kind, Line, Piece, Token},
@@ -75,8 +76,13 @@ fn names(t: &[Token], d: &mut Diagnostics<'_>, fallback: Span) -> Option<Vec<Str
     }
     Some(out)
 }
-pub fn parse(lines: &[Line], d: &mut Diagnostics<'_>) -> Script {
-    let mut p = Parser { lines, index: 0, d };
+pub fn parse(lines: &[Line], d: &mut Diagnostics<'_>, registry: &Registry) -> Script {
+    let mut p = Parser {
+        lines,
+        index: 0,
+        d,
+        registry,
+    };
     let mut script = Script::default();
     while p.index < lines.len() {
         let line = &lines[p.index];
@@ -125,22 +131,43 @@ pub fn parse(lines: &[Line], d: &mut Diagnostics<'_>) -> Script {
             }
             continue;
         }
-        let result = if word(&t[0], "on") && t.len() == 3 && colon(&t[2]) {
-            let kind = match &t[1].kind {
-                Kind::Word(w) => match w.as_str() {
-                    "message" => Some(sculk_bot::EventKind::Message),
-                    "connection" => Some(sculk_bot::EventKind::Connection),
-                    "synchronization" => Some(sculk_bot::EventKind::Synchronization),
-                    "unknown" => Some(sculk_bot::EventKind::Unknown),
-                    "lag" => Some(sculk_bot::EventKind::Lagged),
+        let result = if word(&t[0], "on") && t.len() >= 3 && t.last().is_some_and(colon) {
+            let header = &t[1..t.len() - 1];
+            let builtin = if header.len() == 1 {
+                match &header[0].kind {
+                    Kind::Word(w) => match w.as_str() {
+                        "message" => Some(sculk_bot::EventKind::Message),
+                        "connection" => Some(sculk_bot::EventKind::Connection),
+                        "synchronization" => Some(sculk_bot::EventKind::Synchronization),
+                        "unknown" => Some(sculk_bot::EventKind::Unknown),
+                        "lag" => Some(sculk_bot::EventKind::Lagged),
+                        _ => None,
+                    },
                     _ => None,
-                },
-                _ => None,
+                }
+            } else {
+                None
             };
+            let matched = p
+                .registry
+                .resolve(header, Group::Event)
+                .filter(|m| m.consumed == header.len());
+            let addon = matched.as_ref().map(|m| m.id);
+            let kind = builtin.or_else(|| {
+                addon.and_then(|id| match p.registry.entry(id).kind {
+                    crate::addon::SyntaxKind::Event(kind) => Some(kind),
+                    _ => None,
+                })
+            });
             p.index += 1;
             let body = p.block(4, 1);
             if let Some(kind) = kind {
-                Some(Declaration::Event { kind, body, span })
+                Some(Declaration::Event {
+                    kind,
+                    body,
+                    span,
+                    addon,
+                })
             } else {
                 p.d.push(
                     span,
@@ -176,6 +203,7 @@ pub fn parse(lines: &[Line], d: &mut Diagnostics<'_>) -> Script {
 }
 struct Parser<'a, 'b, 'c> {
     lines: &'a [Line],
+    registry: &'a Registry,
     index: usize,
     d: &'b mut Diagnostics<'c>,
 }
@@ -321,7 +349,7 @@ impl Parser<'_, '_, '_> {
                 continue;
             }
             let kind = if word(&t[0], "if") && t.last().is_some_and(colon) {
-                let condition = expression(&t[1..t.len() - 1], self.d, 1, span);
+                let condition = expression(&t[1..t.len() - 1], self.d, 1, span, self.registry);
                 let yes = self.block(indent + 4, depth + 1);
                 let mut no = Vec::new();
                 if let Some(line) = self.lines.get(self.index) {
@@ -336,15 +364,16 @@ impl Parser<'_, '_, '_> {
                 }
                 condition.map(|c| StatementKind::If(c, yes, no))
             } else if word(&t[0], "reply") {
-                expression(&t[1..], self.d, 1, span).map(StatementKind::Reply)
+                expression(&t[1..], self.d, 1, span, self.registry).map(StatementKind::Reply)
             } else if word(&t[0], "send")
                 && t.len() >= 4
                 && words(&t[t.len() - 2..], &["to", "event-room"])
             {
-                expression(&t[1..t.len() - 2], self.d, 1, span).map(StatementKind::Reply)
+                expression(&t[1..t.len() - 2], self.d, 1, span, self.registry)
+                    .map(StatementKind::Reply)
             } else if word(&t[0], "set") && t.len() >= 4 && word(&t[2], "to") {
                 if let Kind::Local(name) = &t[1].kind {
-                    expression(&t[3..], self.d, 1, span)
+                    expression(&t[3..], self.d, 1, span, self.registry)
                         .map(|e| StatementKind::Set(name.clone(), e))
                 } else {
                     self.d.push(
@@ -356,6 +385,24 @@ impl Parser<'_, '_, '_> {
                 }
             } else if t.len() == 1 && word(&t[0], "stop") {
                 Some(StatementKind::Stop)
+            } else if let Some(matched) = self.registry.resolve(t, Group::Effect) {
+                if matched.consumed != t.len() {
+                    self.d.push(
+                        t[matched.consumed].span,
+                        Category::Syntax,
+                        "unexpected tokens after addon effect",
+                    );
+                    None
+                } else {
+                    let arguments = matched
+                        .arguments
+                        .iter()
+                        .map(|r| {
+                            expression(&t[r.clone()], self.d, 1, t[r.start].span, self.registry)
+                        })
+                        .collect::<Option<Vec<_>>>();
+                    arguments.map(|args| StatementKind::Addon(matched.id, args))
+                }
             } else {
                 self.d.push(
                     span,
@@ -386,6 +433,7 @@ pub fn expression(
     d: &mut Diagnostics<'_>,
     depth: usize,
     fallback: Span,
+    registry: &Registry,
 ) -> Option<Expr> {
     if tokens.is_empty() {
         return fail(d, fallback, "expected an expression");
@@ -394,6 +442,7 @@ pub fn expression(
         tokens,
         index: 0,
         d,
+        registry,
     };
     let e = p.or(depth)?;
     if p.index != tokens.len() {
@@ -403,6 +452,7 @@ pub fn expression(
 }
 struct Expression<'a, 'b, 'c> {
     tokens: &'a [Token],
+    registry: &'a Registry,
     index: usize,
     d: &'b mut Diagnostics<'c>,
 }
@@ -479,6 +529,37 @@ impl Expression<'_, '_, '_> {
                 .push(t.span, Category::Limit, "expression depth limit exceeded");
             return None;
         }
+        if self.registry.has_head(t, Group::Expression) {
+            let Some(matched) = self
+                .registry
+                .resolve(&self.tokens[self.index..], Group::Expression)
+            else {
+                return fail(
+                    self.d,
+                    t.span,
+                    "addon pattern does not match; use atomic parameters or parentheses",
+                );
+            };
+            let base = self.index;
+            let arguments = matched
+                .arguments
+                .iter()
+                .map(|r| {
+                    expression(
+                        &self.tokens[base + r.start..base + r.end],
+                        self.d,
+                        depth + 1,
+                        self.tokens[base + r.start].span,
+                        self.registry,
+                    )
+                })
+                .collect::<Option<Vec<_>>>()?;
+            self.index += matched.consumed;
+            return Some(Expr {
+                kind: ExprKind::Addon(matched.id, arguments),
+                span: t.span,
+            });
+        }
         self.index += 1;
         let span = t.span;
         let kind = match &t.kind {
@@ -498,7 +579,13 @@ impl Expression<'_, '_, '_> {
                         }),
                         Piece::Expression(source, span) => {
                             let tokens = lexer::tokens(source, *span, self.d);
-                            expressions.push(expression(&tokens, self.d, depth + 1, *span)?);
+                            expressions.push(expression(
+                                &tokens,
+                                self.d,
+                                depth + 1,
+                                *span,
+                                self.registry,
+                            )?);
                         }
                     }
                 }

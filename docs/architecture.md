@@ -1,5 +1,20 @@
 # Architecture
 
+## Phase 11 typed addons
+
+The script compiler accepts an immutable snapshot of validated Rust registrations.
+Constrained literal/typed-slot patterns resolve during parsing, producing typed AST
+calls with source spans. Semantic analysis checks arguments and host grants;
+instructions retain direct shared implementations, with no runtime pattern lookup.
+Event aliases map to existing bot EventKind callbacks.
+
+The executor keeps its existing step/time/cancellation bounds. Native costs and
+restricted facility operations share a lazily allocated atomic meter; exhaustion
+latches. Per-callback leases revoke retained contexts on return/drop. Native code
+receives primitive values and restricted facilities, with no raw client/session
+access. It remains trusted Rust, not sandboxed code. No dispatcher, connection
+owner, pool, VM or runtime dependency was added. [Addon API](addons.md).
+
 ## Phase 10 script layer
 
 `sculk-script -> sculk-bot -> sculk-client -> sculk-protocol` preserves the existing

@@ -301,9 +301,8 @@ retry, effect rollback or exactly-once guarantee.
 Unsupported: persistent/global variables, functions, loops, arithmetic, floating
 point, user-defined types, hot reload, imports, filesystem/network/environment
 access, arbitrary native calls, account tokens, raw client internals, moderation
-effects and room-administrator inference. Builtin syntax/type resolution and
-execution operations are centralized behind the compiler and bot context, without
-a heavyweight VM. Future trusted Rust addons can extend those typed resolution
-points and bot registrations; a public custom-syntax registry is not implemented.
-The next milestone is a small typed addon registry/execution-cost contract and
-function frontend, retaining these resource limits and shared extension semantics.
+effects and room-administrator inference. Phase 11 adds a [typed native addon
+registry](addons.md) for registered expressions, conditions, effects and existing
+event aliases. These are statically linked trusted Rust implementations, not
+arbitrary script native calls or a native-code sandbox. The compiler/runtime and
+resource limits remain shared; source-level functions remain future work.

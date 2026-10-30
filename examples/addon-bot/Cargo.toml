@@ -1,0 +1,12 @@
+[package]
+name = "sculk-addon-bot"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+publish = false
+[dependencies]
+sculk-script.workspace = true
+sculk-bot.workspace = true
+sculk-protocol.workspace = true
+bson.workspace = true
+tokio.workspace = true

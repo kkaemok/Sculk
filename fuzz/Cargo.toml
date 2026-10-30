@@ -26,3 +26,9 @@ test = false
 doc = false
 bench = false
 [workspace]
+[[bin]]
+name = "addon"
+path = "fuzz_targets/addon.rs"
+test = false
+doc = false
+bench = false

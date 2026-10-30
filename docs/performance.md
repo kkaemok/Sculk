@@ -396,3 +396,57 @@ vary, so subtracting loaded RSS across children would be misleading. These figur
 cover an inactive local source, not an authenticated client session or a long soak.
 No idle CPU claim follows from the short memory sample. Default source, instruction,
 local, string and queue limits are documented in [scripting](scripting.md).
+
+## Phase 11 typed addon comparison — 2026-10-30
+
+Reproduce: `cargo bench -p sculk-script --bench addons --locked`. Isolated release
+run on the same x86-64 development container (2-CPU quota, 8-GiB limit, Rust 1.99.1),
+current-thread Tokio, instrumented system allocator. No competing build/fuzz job
+ran during timing. This is not an Oracle Micro / real-service measurement.
+
+Three functionally equivalent pipelines use synthetic sender 2 → score 42 → trusted
+condition → `Score: 42`. Every variant consumes identical 512-byte pre-parsed
+messages, queue 16, dedup window 256, cycling 257 consistent packets. Native Rust
+calls the same score/condition functions directly. The builtin script expresses the
+same finite decision with assignments/comparisons/interpolation. The addon script
+calls three registered implementations, including an asynchronous effect. Each
+mock reply asserts identical text and yields once. A semaphore-paced local source
+allows only the next input after a reply, preventing overflow from obscuring the
+handler measurement; these are whole-pipeline latencies, not saturated throughput.
+20,000 events/replies per case, no failures. Setup and source parsing are excluded.
+
+| Variant | ns/event | Allocations/event | Reallocations/event | Requested bytes/event |
+|---|---:|---:|---:|---:|
+| Native Rust | 2144.5 | 5 | 0 | 631.5 |
+| Builtin script | 3618.4 | 6 | 1 | 1265.5 |
+| Typed addon script | 5762.3 | 14 | 0 | 3567.5 |
+
+Addon overhead includes typed argument vectors, leases, shared metering, capability/
+result checks and dynamic Rust callbacks. Builtins have different instruction counts
+for the same decision; registration costs are not fabricated as runtime savings.
+`stats_alloc` adds accounting overhead equally across variants. Allocation requests
+are cumulative work, not retained memory. No zero-overhead or improvement claim.
+
+Startup (1,000 iterations): register three entries **1.56 µs / 34 allocations**;
+compile builtin source (138 bytes) **6.15 µs / 72 allocations**; compile addon source
+(116 bytes) **4.24 µs / 56 allocations**. Both compilation figures include lexer,
+parser and semantic work. The addon source has fewer language operations; this is
+not evidence that addon compilation is intrinsically faster. Rust compilation and
+native bot construction are different tasks and are not compared to source parsing.
+
+Fresh processes held one idle bot/handler and local source for 250 ms:
+
+| Variant | RSS baseline → loaded | Live requested-heap increase |
+|---|---:|---:|
+| Native | 1884 → 2024 KiB | 10,578 bytes |
+| Builtin | 1888 → 2116 KiB | 12,554 bytes |
+| Addon | 1884 → 2112 KiB | 13,888 bytes |
+
+RSS is total `/proc/self/smaps_rollup`, with variable child baselines/allocator page
+retention; it is not interchangeable with payload bytes or precise cross-process
+incremental overhead. A separate compiler/program lifecycle had **0 tracked live
+bytes after drop** in this warmed allocator. Weak-reference tests also verify that
+unused native implementations are released with the compiler, and used ones with
+the last program. Native captured state or retained contexts remain application-
+owned. These small samples exclude authenticated sessions and prolonged workloads;
+no target idle-CPU, soak or live compatibility claim follows.
