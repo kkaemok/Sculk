@@ -1,0 +1,4 @@
+# Synthetic offline greeting example.
+on message:
+    if message is "안녕":
+        reply "안녕하세요!"

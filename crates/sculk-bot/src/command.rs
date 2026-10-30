@@ -7,14 +7,16 @@ pub struct Command {
     pub(crate) name: String,
     pub(crate) aliases: Vec<String>,
     pub(crate) permissions: Vec<crate::PermissionId>,
+    pub(crate) prefixes: Option<Vec<String>>,
 }
 impl Command {
-    /// Command names/aliases are ASCII letters, digits, `_` or `-`, 1..64 bytes.
+    /// Command names/aliases are Unicode alphanumerics, `_` or `-`, 1..64 bytes.
     pub fn new(name: impl Into<String>) -> Self {
         Self {
             name: name.into(),
             aliases: Vec::new(),
             permissions: Vec::new(),
+            prefixes: None,
         }
     }
     /// Add a startup alias, checked for collisions on registration.
@@ -27,19 +29,26 @@ impl Command {
         self.permissions.push(permission);
         self
     }
+    /// Override the bot default with 1..16 exact string prefixes. Empty strings
+    /// additionally require the bot owner's explicit prefixless opt-in.
+    pub fn prefixes(mut self, prefixes: impl IntoIterator<Item = impl Into<String>>) -> Self {
+        self.prefixes = Some(prefixes.into_iter().map(Into::into).collect());
+        self
+    }
 }
-pub(crate) fn valid_name(name: &str) -> bool {
+/// Command names/aliases are 1..64 UTF-8 bytes of Unicode alphanumerics, `_`, `-`.
+pub fn valid_name(name: &str) -> bool {
     !name.is_empty()
         && name.len() <= 64
         && name
-            .bytes()
-            .all(|b| b.is_ascii_alphanumeric() || b == b'_' || b == b'-')
+            .chars()
+            .all(|c| c.is_alphanumeric() || c == '_' || c == '-')
 }
 pub(crate) fn key(name: &str, case_sensitive: bool) -> String {
     if case_sensitive {
         name.into()
     } else {
-        name.to_ascii_lowercase()
+        name.to_lowercase()
     }
 }
 /// Invalid quoting or an explicit local work bound. No input in diagnostics.
@@ -89,7 +98,7 @@ impl Invocation {
 /// arguments; single/double quotes concatenate segments, backslash escapes the
 /// next Unicode scalar. This is a command grammar, never a shell expansion.
 pub(crate) fn parse_invocation(text: &str, prefix: &str) -> Result<Option<Invocation>, ParseError> {
-    if prefix.is_empty() || !text.starts_with(prefix) {
+    if !text.starts_with(prefix) {
         return Ok(None);
     }
     if text.len() > 16384 {
@@ -174,5 +183,8 @@ impl Parsed<'_> {
 }
 /// Parse a bounded command without registration lookup or permission execution.
 pub fn parse<'a>(text: &'a str, prefix: &str) -> Result<Option<Parsed<'a>>, ParseError> {
+    if prefix.is_empty() {
+        return Ok(None);
+    }
     Ok(parse_invocation(text, prefix)?.map(|invocation| Parsed { text, invocation }))
 }

@@ -1,0 +1,22 @@
+[package]
+name = "sculk-script"
+description = "Bounded compiled scripting for the Sculk bot framework"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+repository.workspace = true
+
+[dependencies]
+sculk-bot.workspace = true
+tokio.workspace = true
+thiserror.workspace = true
+
+[dev-dependencies]
+sculk-protocol.workspace = true
+bson.workspace = true
+tokio = { workspace = true, features = ["test-util"] }
+stats_alloc = "0.1"
+
+[[bench]]
+name = "runtime"
+harness = false

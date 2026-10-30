@@ -341,3 +341,58 @@ an explicit body-size cap. The source's queue and existing client ring are separ
 bounds, as are dedup/registration tables. Application-retained contexts and handler
 work must be budgeted separately. No bot background task or idle timer is created.
 EOF/cancellation, failure and memory ownership are specified in [bot.md](bot.md).
+
+## Phase 10 native/script comparison — 2026-10-30
+
+Reproduce: `cargo bench -p sculk-script --bench runtime --locked`. Final isolated
+release run, Rust 1.99.1, current-thread Tokio, x86-64 Linux development container,
+2-CPU quota / 8-GiB memory limit. No competing build/fuzz job was running during
+this measurement. This is **not** an Oracle 1/8-OCPU / 1-GB measurement.
+
+Each pair uses identical 512-byte synthetic input, the same bot prefix/argument
+parser, queue capacity 16, 256-ID dedup window and mock outbound adapter. The source
+cycles 257 consistent pre-parsed packets to exercise bounded eviction. Payloads,
+compilation and registration are outside event timing. Every case completes
+30,000 events and exactly 30,000 mock reply calls, without failures. The condition
+case compares the same full message, the variable case copies/reads a local and
+replies with it, and the interpolation case consumes the same quoted argument and
+produces the same greeting. There is no additional script dispatcher.
+
+| Whole workload | Native ns/event | Script ns/event | Native allocations/event | Script allocations/event |
+|---|---:|---:|---:|---:|
+| Message → constant reply | 1456.7 | 1787.3 | 4 | 4 |
+| Equality condition → reply | 1546.9 | 2147.0 | 4 | 4 |
+| Local assignment/read + condition + reply | 1587.2 | 2301.9 | 5 | 6 |
+| Command lookup + constant reply | 3399.5 | 3874.4 | 6 | 6 |
+| Quoted argument + greeting interpolation | 3681.3 | 4257.6 | 8 | 8 |
+
+Total requested allocator bytes/event, native/script respectively: message
+481/1081, condition 497/1081, variable 1033/1633, command 633/1233, interpolation
+2205/2765. The interpolation case also performs 8 reallocations/event in **both**
+variants (including shared argument decoding); the other cases perform none.
+Allocation requests are cumulative work, not retained payload or total RSS.
+`stats_alloc` instruments the system allocator for both variants and adds its own
+accounting cost. It is a benchmark-only dependency; production uses its normal
+allocator. These are single-run whole-dispatch costs, not isolated CPU instruction
+costs, percentiles, zero-overhead claims or real bot throughput. Permissions with
+explicit rules, BSON parsing, transport, authentication and network RTT are excluded.
+
+Lexer + parser + semantic compilation of the 586-byte variable-handler source:
+**5.02 µs/compile**, 49 allocations/compile, averaged over 1,000 compilations.
+This measures the combined startup pipeline and discards each compiled result;
+it does not compare Rust compilation time or put source parsing in event timing.
+
+Fresh child processes also held one inactive bot/handler for 250 ms with no events:
+
+| Variant | RSS before/after startup | Live heap increase from startup |
+|---|---:|---:|
+| Native | 1916 → 2060 KiB | 11,058 bytes |
+| Script | 1848 → 2008 KiB | 12,426 bytes |
+
+Live heap delta includes bot/source/timer/compiled handler state; this workload's
+script variant retained 1,368 more tracked bytes. Whole-process RSS comes from
+`/proc/self/smaps_rollup`; separate child baselines and allocator page retention
+vary, so subtracting loaded RSS across children would be misleading. These figures
+cover an inactive local source, not an authenticated client session or a long soak.
+No idle CPU claim follows from the short memory sample. Default source, instruction,
+local, string and queue limits are documented in [scripting](scripting.md).

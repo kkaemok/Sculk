@@ -16,7 +16,7 @@ use tokio::sync::{mpsc, watch};
 pub struct Config {
     /// Exact UTF-8 prefix, 1..64 bytes. Default `!`.
     pub prefix: String,
-    /// False performs ASCII case folding of registered names and lookup tokens.
+    /// False lowercases Unicode names/tokens, without normalization or locale rules.
     pub case_sensitive: bool,
     /// 1..128 queue slots; full queue terminates intake explicitly, never blocks it.
     pub event_capacity: usize,
@@ -111,7 +111,8 @@ struct Registered {
 pub struct Bot {
     config: Config,
     commands: Vec<Registered>,
-    lookup: HashMap<String, usize>,
+    prefixes: crate::prefix::Prefixes,
+    allow_prefixless: bool,
     handlers: Vec<(EventKind, Handler)>,
     errors: Vec<Handler>,
     permissions: Permissions,
@@ -133,9 +134,10 @@ impl Bot {
             return Err(RegistrationError::Invalid);
         }
         Ok(Self {
+            prefixes: crate::prefix::Prefixes::new(&config.prefix),
             config,
             commands: Vec::new(),
-            lookup: HashMap::new(),
+            allow_prefixless: false,
             handlers: Vec::new(),
             errors: Vec::new(),
             permissions: Permissions {
@@ -144,6 +146,20 @@ impl Bot {
             },
             outbound: Arc::new(DisabledOutbound),
         })
+    }
+    /// Framework-wide command case policy. Unicode lowercase is used when false;
+    /// no normalization or locale-dependent equivalence is inferred.
+    pub fn case_sensitive(&self) -> bool {
+        self.config.case_sensitive
+    }
+    /// Explicit startup opt-in for commands with an empty prefix. Disabling is
+    /// refused once a prefixless command is registered.
+    pub fn allow_prefixless_commands(&mut self, allow: bool) -> Result<(), RegistrationError> {
+        if !allow && self.prefixes.index("").is_some() {
+            return Err(RegistrationError::Invalid);
+        }
+        self.allow_prefixless = allow;
+        Ok(())
     }
     /// Replace permission lookups before startup. No server roles are consulted.
     pub fn permission_store(&mut self, store: Arc<dyn PermissionStore>) {
@@ -201,12 +217,47 @@ impl Bot {
                 return Err(RegistrationError::Invalid);
             }
             let key = command::key(name, self.config.case_sensitive);
-            if self.lookup.contains_key(&key) || !names.insert(key) {
+            if !names.insert(key) {
                 return Err(RegistrationError::Duplicate);
             }
         }
-        for name in names {
-            self.lookup.insert(name, self.commands.len());
+        let prefixes = command
+            .prefixes
+            .as_deref()
+            .unwrap_or(std::slice::from_ref(&self.config.prefix));
+        if prefixes.is_empty() || prefixes.len() > 16 {
+            return Err(RegistrationError::Limit);
+        }
+        let mut unique = HashSet::new();
+        let mut new_count = 0;
+        for prefix in prefixes {
+            if !crate::valid_prefix(prefix, self.allow_prefixless) {
+                return Err(RegistrationError::Invalid);
+            }
+            if !unique.insert(prefix) {
+                return Err(RegistrationError::Duplicate);
+            }
+            if let Some(index) = self.prefixes.index(prefix) {
+                if names
+                    .iter()
+                    .any(|name| self.prefixes.tables[index].1.contains_key(name))
+                {
+                    return Err(RegistrationError::Duplicate);
+                }
+            } else {
+                new_count += 1;
+            }
+        }
+        if self.prefixes.tables.len() + new_count > 128 {
+            return Err(RegistrationError::Limit);
+        }
+        for prefix in prefixes {
+            let index = self.prefixes.add(prefix);
+            for name in &names {
+                self.prefixes.tables[index]
+                    .1
+                    .insert(name.clone(), self.commands.len());
+            }
         }
         self.commands.push(Registered {
             command,
@@ -362,7 +413,11 @@ impl Bot {
         else {
             return;
         };
-        let invocation = match command::parse_invocation(text, &self.config.prefix) {
+        let Some(prefix_index) = self.prefixes.longest(text) else {
+            return;
+        };
+        let (prefix, lookup) = &self.prefixes.tables[prefix_index];
+        let invocation = match command::parse_invocation(text, prefix) {
             Ok(Some(i)) => i,
             Ok(None) => return,
             Err(e) => {
@@ -372,9 +427,9 @@ impl Bot {
         };
         let name = invocation.name(text);
         let index = if self.config.case_sensitive {
-            self.lookup.get(name).copied()
+            lookup.get(name).copied()
         } else {
-            self.lookup.get(&name.to_ascii_lowercase()).copied()
+            lookup.get(&name.to_lowercase()).copied()
         };
         ctx.invocation = Some(Arc::new(invocation));
         let Some(index) = index else {

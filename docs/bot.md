@@ -47,10 +47,15 @@ quoted/escaped arguments allocate decoded strings.
 
 ## Commands and permissions
 
-Prefixes match the beginning exactly; leading whitespace is not ignored. Prefixes
-are 1..64 non-whitespace UTF-8 bytes. Names/aliases use 1..64 ASCII letters, digits,
-`_` or `-`. Case-insensitive mode folds ASCII names and lookup tokens. Registration
-compiles a lookup table once, rejects collisions atomically and limits it to 128
+Prefixes match the beginning exactly; leading whitespace is not ignored.
+The default `Config.prefix` remains a 1..64 non-whitespace UTF-8 string.
+Phase 10 adds `Command::prefixes` overrides (1..16 strings, at most 64 bytes each),
+including meaningful whitespace such as `봇아 `. `allow_prefixless_commands(true)`
+is required for empty overrides. At most 128 unique prefixes are compiled into a
+byte trie; the longest prefix wins, then its complete name/alias is looked up.
+Names/aliases use 1..64 UTF-8 bytes of Unicode alphanumerics, `_` or `-`.
+Case-insensitive mode uses Unicode lowercase without normalization or locale rules.
+Registration rejects `(prefix, name)` collisions atomically and limits it to 128
 commands with 16 aliases each. Only real-time text-type messages invoke commands.
 
 Arguments use whitespace separation, single/double quotes, concatenated segments
@@ -153,6 +158,6 @@ async callbacks, `EventKind` handlers and permission IDs; read conditions and
 expressions from `Context`; implement effects through its permission/outbound
 boundaries. Variables/functions and compiled programs belong in that future host.
 `.sculk` is the official extension and `.sc` an equivalent alias to **the same**
-parser, compiler, runtime and semantics. Phase 9 adds no loader, language parser,
-VM or interpreter. The next slice should implement a shared frontend, diagnostics
-and execution budgets for one command/event/effect using these APIs.
+parser, compiler, runtime and semantics. Phase 9 added no loader or language.
+Phase 10 implements that compiled frontend, diagnostics and bounded runtime in
+[sculk-script](scripting.md), using these same APIs without another dispatcher.

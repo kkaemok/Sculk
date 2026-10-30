@@ -1,5 +1,19 @@
 # Compatibility matrix
 
+## Phase 10 scripting status (2026-10-30)
+
+`sculk-script` and `sculk-script-bot` are **offline tested**. Both supported file
+extensions compile into the same bounded runtime, registering native bot callbacks
+for events, commands, aliases, permissions, conditions, locals and reply effects.
+The shared bot prefix matcher supports the requested punctuation and Unicode/string
+prefixes, including meaningful whitespace. No raw client or credential access is
+exposed to scripts. Prefixes per room and custom addon syntax remain future work.
+
+This is language/framework compatibility, with synthetic events and explicit mock
+receipts. No new live KakaoTalk compatibility, authentication, WRITE or moderation
+claim follows. Existing owner-account/key/profile/network blockers remain; no
+account operation was attempted. [Implemented syntax and restrictions](scripting.md).
+
 ## Phase 9 framework status (2026-10-29)
 
 `sculk-bot` and `sculk-basic-bot` are **offline tested**: commands, permissions,

@@ -662,3 +662,60 @@ cryptography or advisory suppression was added; Phase 8's RSA advisory/exposure
 assessment remains applicable. No bot command/history replay or implicit reconnect
 is performed. Live compatibility blockers remain as documented in Phase 8. Work is
 committed locally; pushing requires separate explicit authorization.
+
+## Phase 10 — compiled scripting (2026-10-30)
+
+Verified local Phase 9 `1e2bf0d` and its Phase 8/7 ancestry before editing. The
+pre-change all-feature baseline passed **141 tests**. Existing client/protocol,
+message/history, authentication and recovery code was preserved.
+
+| Final check | Result |
+|---|---|
+| Workspace and separate fuzz formatting checks | Passed |
+| Strict Clippy, workspace/all targets/all features | Passed |
+| Workspace all-feature tests, locked | **165 passed**, including two API doctests |
+| Workspace default-feature tests, locked | **104 passed**, including two API doctests |
+| Release workspace build, all features | Passed |
+| Warnings-denied workspace rustdoc, all features | Passed |
+| Offline `sculk-script-bot` | Five synthetic messages/replies, four commands, no failures, clean local cleanup |
+| Existing decode and new script fuzz targets, locked cargo check | Passed |
+| New compiler/install fuzz target, final campaign | **353,859 runs / 31 seconds**, 512 MB cap, no crash |
+| Native/script latency, allocation and idle-memory benchmark | Completed; see performance record |
+
+The new crate has 21 integration tests plus an executable public API doctest;
+sculk-bot adds two focused prefix tests. Coverage includes identical extension
+semantics, file size/UTF-8 rejection, comments/indentation, escaped Unicode,
+nested conditions/scopes/types, exact Int64 extrema, every requested prefix form,
+longest-prefix matching, alias conflicts, explicit/global/command precedence,
+prefixless opt-in, argument-parser reuse, missing arguments, compiled interpolation,
+argument content remaining data, local isolation across concurrent bots, existing
+permissions, unknown/lifecycle notifications, step/output/deadline exhaustion,
+cancellation, outbound failure isolation/no retry and graceful source shutdown.
+Synthetic fixtures and mock receipts are explicitly labelled. Fuzzing exercises
+bounded UTF-8 source compilation and installation, not account/network operations;
+it is not proof that every possible script or runtime schedule is correct.
+
+Implementation inventory:
+
+- New `crates/sculk-script`: Cargo manifest, lexer, parser, typed AST, compiler,
+  bounded runtime, public API, integration tests and native/script benchmark.
+- New `examples/script-bot`: executable manifest/source and two actual script files,
+  `hello.sculk` and `commands.sc`.
+- Existing `sculk-bot`: additive command prefix overrides, bounded byte trie,
+  Unicode name/case support, explicit prefixless opt-in and prefix tests. Existing
+  dispatcher, argument grammar, permission and lifecycle implementations remain.
+- Root workspace/lock, standalone fuzz manifest/lock and compiler fuzz target, CI
+  example execution, README, changelog, architecture, compatibility, verification,
+  performance, bot API documentation and new `docs/scripting.md`.
+
+Only new registry dependency: `stats_alloc 0.1.10`, for benchmark/dev allocation
+instrumentation. No registry package version was upgraded. No heavyweight VM,
+database, new protocol/auth dependency or advisory suppression was introduced.
+Existing RUSTSEC-2023-0071 exposure/mitigation documentation remains applicable.
+
+Scripts have no I/O, environment, credentials or arbitrary native-call syntax.
+The synchronous host loader explicitly chooses bounded startup files; it is not
+an untrusted-path service. Runtime errors contain safe metadata, while source
+excerpts require explicit host opt-in. No real KakaoTalk login, WRITE, moderation,
+crates publication or release occurred. Changes are committed locally; pushing
+requires separate authorization.

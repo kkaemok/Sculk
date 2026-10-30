@@ -17,12 +17,15 @@
 //! ```
 mod command;
 mod permissions;
+mod prefix;
 mod runtime;
 mod source;
 
+pub use command::valid_name as valid_command_name;
 use command::Invocation;
 pub use command::{parse, Command, ParseError, Parsed};
 pub use permissions::{Decision, MemoryPermissions, PermissionId, PermissionStore};
+pub use prefix::valid_prefix;
 pub use runtime::{Bot, Config, Failure, HandlerError, RegistrationError, RunReport, StopReason};
 pub use sculk_client::{
     messaging::{Event as ClientEvent, Message, MessageId, MessageType, SenderId, TextReceipt},

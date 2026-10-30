@@ -1,5 +1,5 @@
 [workspace]
-members = ["crates/*", "examples/basic-client", "examples/auth-client", "examples/basic-bot"]
+members = ["crates/*", "examples/basic-client", "examples/auth-client", "examples/basic-bot", "examples/script-bot"]
 resolver = "2"
 
 [workspace.package]
@@ -18,3 +18,4 @@ futures-util = { version = "0.3", features = ["sink"] }
 sculk-protocol = { version = "0.1.0", path = "crates/sculk-protocol" }
 sculk-client = { version = "0.1.0", path = "crates/sculk-client" }
 sculk-bot = { version = "0.1.0", path = "crates/sculk-bot" }
+sculk-script = { version = "0.1.0", path = "crates/sculk-script" }

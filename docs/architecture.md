@@ -1,5 +1,21 @@
 # Architecture
 
+## Phase 10 script layer
+
+`sculk-script -> sculk-bot -> sculk-client -> sculk-protocol` preserves the existing
+ownership boundaries. Explicit startup loading feeds one lexer/indentation parser,
+a typed AST, scope/type/resource analysis and immutable forward-jump instructions
+with precompiled interpolation segments. `.sculk` and `.sc` share every stage.
+Source/AST data is discarded; event handling never parses source text.
+
+Installation registers ordinary bot event/command callbacks. The bot's additive
+per-command prefix lists and bounded byte trie handle longest-prefix matching,
+Unicode aliases, shared argument parsing and the existing permission registry.
+There is no script command dispatcher or connection copy. A runtime invocation
+owns its local slots and checks steps, time, cancellation and string/output bounds;
+asynchronous messaging effects use only the explicit bot outbound adapter.
+See [language/runtime design](scripting.md) and [controlled measurements](performance.md).
+
 ## Phase 9 bot layer
 
 `sculk-bot -> sculk-client -> sculk-protocol` is a one-way dependency chain.

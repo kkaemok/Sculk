@@ -22,6 +22,18 @@ This offline example demonstrates `!ping`, `!help` and explicit mock replies.
 See the [public bot API and future script boundary](docs/bot.md). Live WRITE stays
 unverified; no live sender or automatic authentication is added.
 
+`sculk-script` adds an indentation-based language with events, commands, typed
+conditions, event-local variables, interpolation and bounded asynchronous effects.
+`.sculk` and `.sc` use the same compiler/runtime. Commands reuse the bot's prefix
+trie and argument/permission system, including `/`, `!`, `?`, `.`, `>>` and Unicode
+string prefixes. Try the credential-free script example:
+
+```sh
+cargo run -p sculk-script-bot --locked
+```
+
+See the [scripting tutorial, syntax and runtime restrictions](docs/scripting.md).
+
 ## Run the offline example
 
 Install stable Rust with rustfmt and clippy, then from this checkout:

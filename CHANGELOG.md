@@ -1,5 +1,20 @@
 # Changelog
 
+## Phase 10 — 2026-10-30
+
+- Add `sculk-script`: one lexer/parser, typed AST, semantic compiler and bounded
+  asynchronous instruction runtime shared by `.sculk` and `.sc`.
+- Implement events, commands, conditions, local variables, exact integer/string/
+  boolean expressions, compiled interpolation, reply/send/set/stop and diagnostics.
+- Extend the existing bot registration with per-command string prefixes, a bounded
+  longest-prefix trie and Unicode names/aliases; reuse arguments and permissions.
+- Add explicit loading, size/depth/instruction/step/local/output/time limits,
+  cancellation and typed failure reporting without script I/O or native execution.
+- Add offline script-bot, tests, compiler fuzz target, native/script allocation and
+  latency benchmarks, idle memory measurements, CI execution and full language docs.
+- Preserve explicit live authorization/recovery and mock acknowledgment boundaries;
+  no live WRITE adapter, second dispatcher, package publication or account test.
+
 ## Phase 9 — 2026-10-29
 
 - Add `sculk-bot`: typed events/context, bounded FIFO dispatch without spawned

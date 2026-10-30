@@ -468,6 +468,15 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "cf54715a573b99ac80df0bc206da022bcd442c974952c7b9720069370852e21f"
 
 [[package]]
+name = "sculk-bot"
+version = "0.1.0"
+dependencies = [
+ "sculk-client",
+ "thiserror",
+ "tokio",
+]
+
+[[package]]
 name = "sculk-client"
 version = "0.1.0"
 dependencies = [
@@ -489,8 +498,10 @@ version = "0.0.0"
 dependencies = [
  "bytes",
  "libfuzzer-sys",
+ "sculk-bot",
  "sculk-client",
  "sculk-protocol",
+ "sculk-script",
  "tokio-util",
 ]
 
@@ -502,6 +513,15 @@ dependencies = [
  "bytes",
  "thiserror",
  "tokio-util",
+]
+
+[[package]]
+name = "sculk-script"
+version = "0.1.0"
+dependencies = [
+ "sculk-bot",
+ "thiserror",
+ "tokio",
 ]
 
 [[package]]
