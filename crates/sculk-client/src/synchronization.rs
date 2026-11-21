@@ -394,6 +394,33 @@ impl Tracker {
             self.gap = Gap::Suspected
         }
     }
+    /// Confirm that a fresh authenticated room watermark equals the durable
+    /// boundary, or explicitly start a new consumer at the current watermark.
+    /// Starting at the watermark opts out of earlier history. Callers must
+    /// obtain it from the selected room and never use this to clear truncation.
+    pub fn align_watermark(
+        &mut self,
+        watermark: Option<MessageId>,
+        start_at_current: bool,
+        store: &mut impl CheckpointStore,
+    ) -> Result<(), Error> {
+        let next = Cursor(watermark.map_or(0, MessageId::get));
+        if self.active.is_some() || self.gap == Gap::UnavailableHistory {
+            return Err(Error::Boundary);
+        }
+        if next != self.cursor {
+            if !start_at_current || self.cursor != Cursor::default() || !self.seen.is_empty() {
+                return Err(Error::Boundary);
+            }
+            store
+                .commit(self.room, self.cursor, next)
+                .map_err(|_| Error::Storage)?;
+            self.cursor = next;
+        }
+        self.gap = Gap::None;
+        Ok(())
+    }
+
     /// Classify without marking a message processed. Processing failure must not
     /// populate the dedup set or advance the cursor.
     pub fn observe(&self, message: &Message) -> Result<Observation, Error> {

@@ -1,4 +1,6 @@
 mod config;
+#[cfg(all(unix, feature = "live-validation"))]
+mod live;
 mod storage;
 
 use config::Configuration;
@@ -16,13 +18,17 @@ use std::{
 use storage::Storage;
 use tokio::sync::watch;
 
-type Result<T> = std::result::Result<T, Box<dyn std::error::Error>>;
+type Result<T> = std::result::Result<T, Box<dyn std::error::Error + Send + Sync>>;
 
 const HELP: &str = "\
 sculk [--config PATH] init
 sculk [--config PATH] doctor | status
 sculk [--config PATH] script check | list
 sculk [--config PATH] run --offline
+sculk [--config PATH] run --live PRIVATE_JSON [--refresh] [--report NEW_PATH]
+sculk [--config PATH] run --live PRIVATE_JSON --validate-command PRIVATE_TRIGGER_FILE
+sculk [--config PATH] run --live-service PRIVATE_JSON
+sculk auth check | preflight PRIVATE_JSON
 sculk auth login PRIVATE_JSON [owner validation options]
 sculk auth status
 sculk rooms list | info PRIVATE_JSON
@@ -71,47 +77,95 @@ fn cli(args: Vec<String>) -> Result<ExitCode> {
         ["doctor" | "status"] => {
             let host = Host::load(path)?;
             let (_, program) = host.compile(Arc::default())?;
-            println!("Offline configuration valid. Handlers: {}. SQLite: {}. Target: {} {}.",
-                program.handlers().len(), if host.config.storage.enabled { "enabled" } else { "disabled" },
-                std::env::consts::OS, std::env::consts::ARCH);
+            println!(
+                "Offline configuration valid. Handlers: {}. SQLite: {}. Target: {} {}.",
+                program.handlers().len(),
+                if host.config.storage.enabled {
+                    "enabled"
+                } else {
+                    "disabled"
+                },
+                std::env::consts::OS,
+                std::env::consts::ARCH
+            );
         }
         ["script", "check"] => {
             let host = Host::load(path)?;
             let (_, program) = host.compile(Arc::default())?;
-            println!("Script check passed. Handlers: {}.", program.handlers().len());
+            println!(
+                "Script check passed. Handlers: {}.",
+                program.handlers().len()
+            );
         }
         ["script", "list"] => list(&Host::load(path)?.script_paths()?),
         ["run", "--offline"] => Host::load(path)?.run_offline()?,
-        ["run"] => return Err("continuous live operation requires owner verification of the KakaoTalk profile and transport".into()),
-        ["script", "reload"] => return Err("enter :reload in the running offline console".into()),
-        ["auth", "status"] => println!("The owner probe keeps credentials in memory for its current run."),
-        ["auth", "login", private_config, options @ ..] => {
-            return owner_probe(std::iter::once(*private_config).chain(options.iter().copied()), None);
+        ["run", mode @ ("--live" | "--live-service"), auth, options @ ..] => {
+            return run_live(path, mode, auth, options);
         }
-        ["rooms", "list", private_config] => return owner_probe([*private_config], Some("--read-only")),
-        ["rooms", "info", private_config] => return owner_probe([*private_config], Some("--room-info")),
+        ["run"] => {
+            return Err("choose --offline or explicitly authorize --live; see sculk --help".into())
+        }
+        ["script", "reload"] => return Err("enter :reload in the running offline console".into()),
+        ["auth", "status"] => {
+            println!("The owner probe keeps credentials in memory for its current run.")
+        }
+        ["auth", action @ ("check" | "preflight"), private, options @ ..] => {
+            let mode = if *action == "check" {
+                "--check-room"
+            } else {
+                "--preflight"
+            };
+            return run_probe(
+                mode,
+                std::iter::once(*private).chain(options.iter().copied()),
+            );
+        }
+        ["auth", "login", private_config, options @ ..] => {
+            return owner_probe(
+                std::iter::once(*private_config).chain(options.iter().copied()),
+                None,
+            );
+        }
+        ["rooms", "list", private_config] => {
+            return owner_probe([*private_config], Some("--read-only"))
+        }
+        ["rooms", "info", private_config] => {
+            return owner_probe([*private_config], Some("--room-info"))
+        }
         _ => return Err("unknown options. Run sculk --help".into()),
     }
     Ok(ExitCode::SUCCESS)
 }
 
-#[cfg(feature = "live-validation")]
+#[cfg(all(unix, feature = "live-validation"))]
+fn run_live(path: &Path, mode: &str, auth: &str, options: &[&str]) -> Result<ExitCode> {
+    live::launch(path, mode == "--live-service", Path::new(auth), options)
+}
+
+#[cfg(not(all(unix, feature = "live-validation")))]
+fn run_live(_: &Path, _: &str, _: &str, _: &[&str]) -> Result<ExitCode> {
+    Err("live operation requires a Unix build with --features live-validation".into())
+}
+
 fn owner_probe<'a>(
     args: impl IntoIterator<Item = &'a str>,
     option: Option<&'a str>,
 ) -> Result<ExitCode> {
-    let args = ["--live"]
-        .into_iter()
+    run_probe("--live", args.into_iter().chain(option))
+}
+
+#[cfg(feature = "live-validation")]
+fn run_probe<'a>(mode: &'a str, args: impl IntoIterator<Item = &'a str>) -> Result<ExitCode> {
+    let args = std::iter::once(mode)
         .chain(args)
-        .chain(option)
         .map(str::to_owned)
         .collect::<Vec<_>>();
     Ok(sculk_auth_client::run_cli(&args))
 }
 
 #[cfg(not(feature = "live-validation"))]
-fn owner_probe<'a>(_: impl IntoIterator<Item = &'a str>, _: Option<&str>) -> Result<ExitCode> {
-    Err("build with --features live-validation to use the interactive owner probe".into())
+fn run_probe<'a>(_: &str, _: impl IntoIterator<Item = &'a str>) -> Result<ExitCode> {
+    Err("build with --features live-validation to use the owner probe".into())
 }
 
 fn init(path: &Path) -> Result<()> {
@@ -207,7 +261,6 @@ impl<'a> Host<'a> {
             ..sculk_bot::Config::default()
         })?;
         self.config.install_permissions(&mut bot)?;
-        bot.outbound(Arc::new(ConsoleMock));
         let mut bot = program.install_with_errors(bot, Arc::new(|error| eprintln!("{error}")))?;
         for room in &self.config.rooms {
             if !room.prefixes.is_empty() {
@@ -226,6 +279,7 @@ impl<'a> Host<'a> {
             (None, Arc::default())
         };
         let (mut bot, _) = self.compile(counters.clone())?;
+        bot.outbound(Arc::new(ConsoleMock));
         let runtime = tokio::runtime::Builder::new_current_thread()
             .enable_all()
             .build()?;
@@ -264,6 +318,7 @@ impl<'a> Host<'a> {
                     match self.compile(counters.clone()) {
                         Ok((updated, _)) => {
                             bot = updated;
+                            bot.outbound(Arc::new(ConsoleMock));
                             println!("Scripts reloaded.");
                         }
                         Err(error) => eprintln!(

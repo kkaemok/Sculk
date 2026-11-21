@@ -17,6 +17,7 @@ pub struct Configuration {
     pub bot: BotSettings,
     pub limits: LimitsSettings,
     pub storage: StorageSettings,
+    pub live: LiveSettings,
     pub permissions: Vec<Permission>,
     pub rooms: Vec<RoomSettings>,
 }
@@ -76,6 +77,26 @@ impl Default for StorageSettings {
 }
 
 #[derive(Deserialize)]
+#[serde(default, deny_unknown_fields)]
+pub struct LiveSettings {
+    #[cfg_attr(not(all(unix, feature = "live-validation")), allow(dead_code))]
+    pub checkpoint_dir: Option<PathBuf>,
+    #[cfg_attr(not(all(unix, feature = "live-validation")), allow(dead_code))]
+    pub enable_write: bool,
+    pub write_interval_seconds: u64,
+}
+
+impl Default for LiveSettings {
+    fn default() -> Self {
+        Self {
+            checkpoint_dir: None,
+            enable_write: false,
+            write_interval_seconds: 2,
+        }
+    }
+}
+
+#[derive(Deserialize)]
 #[serde(deny_unknown_fields)]
 pub struct Permission {
     pub name: String,
@@ -120,6 +141,9 @@ impl Configuration {
         }
         if !(1..=256).contains(&config.storage.commit_every) {
             return Err("storage.commit_every must be within 1..256".into());
+        }
+        if !(1..=60).contains(&config.live.write_interval_seconds) {
+            return Err("write_interval_seconds must be within 1..60".into());
         }
         let default_room = RoomId::new(config.bot.offline_room)?;
         SenderId::new(config.bot.offline_sender)?;

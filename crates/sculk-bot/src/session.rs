@@ -47,19 +47,11 @@ impl SessionSource {
     /// are limited to one per interval, including rejected or ambiguous sends.
     /// The caller supplies independent authorization and profile verification.
     pub fn text_outbound(&self, interval: Duration) -> Result<SessionOutbound, RegistrationError> {
-        if interval.is_zero() || interval > Duration::from_secs(60) {
-            return Err(RegistrationError::Invalid);
-        }
         let sender = self
             .session
             .text_sender()
             .map_err(|_| RegistrationError::Invalid)?;
-        Ok(SessionOutbound {
-            sender,
-            room: self.room,
-            interval,
-            last_attempt: Mutex::new(None),
-        })
+        SessionOutbound::new(sender, self.room, interval)
     }
 }
 
@@ -127,6 +119,25 @@ pub struct SessionOutbound {
     room: RoomId,
     interval: Duration,
     last_attempt: Mutex<Option<Instant>>,
+}
+
+impl SessionOutbound {
+    /// Bind a generation's text-only handle to its authorized room and rate limit.
+    pub fn new(
+        sender: TextSender,
+        room: RoomId,
+        interval: Duration,
+    ) -> Result<Self, RegistrationError> {
+        if interval.is_zero() || interval > Duration::from_secs(60) {
+            return Err(RegistrationError::Invalid);
+        }
+        Ok(Self {
+            sender,
+            room,
+            interval,
+            last_attempt: Mutex::new(None),
+        })
+    }
 }
 
 impl Outbound for SessionOutbound {

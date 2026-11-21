@@ -185,3 +185,52 @@ fn opt_in_batches_keep_prior_transactions_and_flush_on_clean_eof() {
     assert!(restored.status.success(), "{restored:?}");
     assert!(String::from_utf8_lossy(&restored.stdout).contains("Counter: 5\n"));
 }
+
+#[cfg(all(unix, feature = "live-validation"))]
+#[test]
+fn a_piped_live_command_validation_stops_at_operator_authorization() {
+    use std::os::unix::fs::PermissionsExt;
+    let directory = tempfile::tempdir().unwrap();
+    let root = directory.path();
+    assert!(command(root).arg("init").status().unwrap().success());
+    let key = root.join("test.der");
+    let auth = root.join("auth.json");
+    let trigger = root.join("trigger");
+    let report = root.join("stages.json");
+    fs::write(
+        &key,
+        include_bytes!("../../../tests/fixtures/documented-server-public.der"),
+    )
+    .unwrap();
+    fs::write(&trigger, "!ping\n").unwrap();
+    fs::write(&auth, format!(
+        r#"{{"expected_user_id":42,"email":"fixture@example.invalid",
+        "device_file":"{root}/device","server_key_file":"{root}/test.der",
+        "server_key_sha256":"c64be379ff4333c91346e7d8685ab11c0ab15cf46183f5316853eb9ae4f1d3ed",
+        "connection_mode":"direct","allowed_endpoints":[{{"host":"booking-loco.kakao.com","port":443}}],
+        "app_version":"fixture","os_version":"13","api_level":"33","device_name":"fixture","test_room_id":2024}}"#,
+        root = root.display()
+    )).unwrap();
+    for path in [&key, &auth, &trigger] {
+        fs::set_permissions(path, fs::Permissions::from_mode(0o600)).unwrap();
+    }
+    let output = command(root)
+        .args([
+            "run",
+            "--live",
+            auth.to_str().unwrap(),
+            "--validate-command",
+            trigger.to_str().unwrap(),
+            "--report",
+            report.to_str().unwrap(),
+        ])
+        .stdin(Stdio::null())
+        .output()
+        .unwrap();
+    assert_eq!(output.status.code(), Some(78));
+    let report = fs::read_to_string(report).unwrap();
+    assert!(report.contains(r#""last_stage": "account-authorization""#));
+    assert!(report.contains(r#""https_authentication": false"#));
+    assert!(!report.contains("fixture@example.invalid") && !report.contains("!ping"));
+    assert!(!root.join("device").exists());
+}

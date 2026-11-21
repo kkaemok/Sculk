@@ -7,9 +7,10 @@ license.workspace = true
 repository.workspace = true
 
 [features]
-live-validation = ["dep:sculk-auth-client"]
+live-validation = ["dep:sculk-auth-client", "dep:sculk-client", "sculk-client/session-recovery", "sculk-client/checkpoint-file"]
 
 [dependencies]
+sculk-client = { workspace = true, optional = true }
 sculk-auth-client = { path = "../../examples/auth-client", features = ["live"], optional = true }
 bson.workspace = true
 sculk-bot.workspace = true

@@ -234,6 +234,33 @@ impl Room {
         }
         Ok(result?)
     }
+    /// Expose a text-only handle for the current generation. A host should
+    /// independently verify the selected room before enabling any WRITE.
+    pub fn text_sender(&self) -> Result<crate::messaging::TextSender, crate::messaging::SendError> {
+        self.session
+            .as_ref()
+            .ok_or(crate::messaging::SendError::NotSent)?
+            .text_sender()
+    }
+
+    /// Drop the current subscription and close the session before a deliberate
+    /// reconnect (for example after PING times out on an otherwise open socket).
+    /// Expired credentials remain blocked for this manager.
+    pub async fn retire(&mut self) -> Result<(), crate::ShutdownError> {
+        self.events = None;
+        self.tracker.abandon_page();
+        if let Some(mut session) = self.session.take() {
+            if !matches!(
+                session.state(),
+                State::Authenticated | State::Failed(AuthError::Interrupted) | State::Closed
+            ) {
+                self.blocked = true;
+            }
+            session.disconnect_checked().await?;
+        }
+        Ok(())
+    }
+
     /// Read the selected room's watermark through the active session. Does not
     /// enter a room, change read state, process messages or commit a checkpoint.
     pub async fn watermark(
@@ -308,12 +335,7 @@ impl Room {
     /// Terminal cleanup with explicit transport-close evidence for applications.
     pub async fn shutdown_checked(&mut self) -> Result<(), crate::ShutdownError> {
         self.closed = true;
-        self.events = None;
-        self.tracker.abandon_page();
-        if let Some(mut session) = self.session.take() {
-            session.disconnect_checked().await?;
-        }
-        Ok(())
+        self.retire().await
     }
     /// Current committed boundary, useful for a new explicit recovery request.
     pub fn cursor(&self) -> Cursor {
