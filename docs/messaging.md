@@ -64,15 +64,41 @@ let packet = request.packet().unwrap(); // offline encoding; sends nothing
 assert_eq!(packet.command.as_str(), "WRITE");
 ```
 
-The exact Agent Messenger text profile is `{chatId:Int64,msg:String,type:Int32(1),
+The historical Agent Messenger text profile is `{chatId:Int64,msg:String,type:Int32(1),
 noSeen:false}`. Older node-kakao requests add client msgId and default noSeen=true;
 Sculk does not blend these profiles or claim current server acceptance. Input
 policy allows 1..16384 UTF-8 bytes with no NUL; messages are never split.
 
-There is no high-level live text sender or send flag in this milestone. Existing
-low-level Session::request can transmit arbitrary commands, so application owners
-must maintain the separate live-send authorization boundary. All submitted WRITE
-tests use local TLS and an explicitly synthetic authentication provider.
+An owner-authorized application can submit this historical profile once:
+
+```rust,no_run
+use sculk_client::{messaging::{SendError, TextReceipt}, read_only::RoomId, session::Session};
+use tokio::sync::watch;
+
+async fn send(session: &Session, room: RoomId, cancel: watch::Receiver<bool>)
+    -> Result<TextReceipt, SendError>
+{
+    session.send_text(room, "Hello!", cancel).await
+}
+```
+
+`Session::text_sender()` provides a text-only handle. Admission checks
+authentication and lease, cancellation and capacity. Once admitted, a
+cancellation can return unknown delivery even when the driver discards the
+queued request before writing. A dropped call cannot undo a write. A sender
+handle becomes unusable when its session closes or expires. The basic request
+does not select or negotiate a newer WRITE profile. See the
+[reference refresh](research.md#reference-refresh-on-2026-11-21).
+
+For a Rust or script bot, pass `SessionSource::select` an authenticated
+session and an authorized room. The adapter verifies `CHATINFO`, filters
+incoming messages to the selected room, and ends on a reported gap or lost
+connection. To enable outbound effects expressly, install
+`source.text_outbound(interval)` on the bot. The adapter limits attempts per
+interval, scopes sends to that room and uses the same `Outbound` contract as
+mock adapters. Acknowledged WRITE receipts have server evidence from the active
+peer. Use the separately authorized owner workflow before relying on any live
+compatibility.
 
 `TextRequest::outcome(result)` classifies one caller-submitted result:
 
@@ -97,12 +123,16 @@ receive-only window after LOGINLIST; reports/stdout retain counts and static
 failure categories, not room IDs, senders, tokens or content. A lease ending during
 the window returns an explicit failure. `--dry-run` cannot enable reception.
 
-The next smallest bot milestone is an owner-observed authenticated receive-only
-run in one test room, with sanitized command/cursor evidence. Then validate initial
-sync, heartbeat, gap reconciliation and duplicate handling before a moderation
-consumer relies on continuity. A single live text write requires separate owner
-authorization after connection validation; no moderation operation is authorized
-or implemented by this milestone.
+After the read-only and controlled receive stages pass, the owner can try
+`--send-one DELAY_SECONDS`. Prepare an owner-private UTF-8 text file and set
+the absolute `test_message_file` and exact `test_room_id` in the local private
+configuration. The owner CLI verifies the selected room after login and asks
+for separate room and exact text confirmations on the controlling terminal.
+It waits the selected 1–60 seconds before submitting a single WRITE. Use a
+room dedicated to this test. The report records the acknowledgment bit, failure
+category and known status, with message contents and room IDs kept off stdout
+and out of the report. An unknown outcome requires manual reconciliation.
+[Authentication and routing](authentication.md).
 
 ## Phase 7 companion APIs
 
@@ -112,4 +142,4 @@ single-session reconnect/resubscription and caller-scheduled PING. These do not
 change the Phase 6 `message_events()` subscription boundary or make its raw stream
 lossless. See [recovery](recovery.md) for dedup windows, suspected versus confirmed
 gaps, server history truncation and conditional at-least-once processing semantics.
-The owner CLI also adds selected-room --receive-one; live sending remains absent.
+The selected-room receive check is available with `--receive-one`.

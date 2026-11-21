@@ -291,6 +291,34 @@ impl Session {
             }
         }
     }
+    /// Submit one text using the historical basic WRITE profile. The caller
+    /// selects and authorizes the room and must verify profile compatibility.
+    /// No automatic retry or fallback. The cancel sender must remain alive.
+    #[cfg(feature = "messaging")]
+    pub async fn send_text(
+        &self,
+        room: crate::read_only::RoomId,
+        text: &str,
+        cancel: watch::Receiver<bool>,
+    ) -> Result<crate::messaging::TextReceipt, crate::messaging::SendError> {
+        self.text_sender()?.send_text(room, text, cancel).await
+    }
+
+    /// Create a text-only handle bound to this session's lifetime. It cannot
+    /// authenticate, replace the session, renew its lease or keep it alive.
+    #[cfg(feature = "messaging")]
+    pub fn text_sender(&self) -> Result<crate::messaging::TextSender, crate::messaging::SendError> {
+        use crate::messaging::{SendError, TextSender};
+        if self.state() != State::Authenticated {
+            return Err(SendError::NotSent);
+        }
+        Ok(TextSender::new(
+            self.client.clone(),
+            self.subscribe(),
+            self.deadline.ok_or(SendError::NotSent)?,
+        ))
+    }
+
     /// Subscribe from now to source-backed MSG events while authenticated.
     /// Uses the existing bounded ring; no replay or per-subscriber worker.
     /// Initial LOGINLIST pushes are not replayed by this API.
@@ -312,6 +340,7 @@ impl Session {
     /// Stop monitoring and report the local graceful-close result separately from
     /// authentication/reception. On failure the session remains terminal.
     pub async fn disconnect_checked(&mut self) -> Result<(), crate::ShutdownError> {
+        self.state.send_replace(State::Closed);
         if let Some(task) = self.monitor.take() {
             task.abort();
             let _ = task.await;
@@ -326,6 +355,7 @@ impl Session {
     }
     /// Stop expiry monitoring and gracefully close the connection.
     pub async fn disconnect(&mut self) {
+        self.state.send_replace(State::Closed);
         if let Some(task) = self.monitor.take() {
             task.abort();
             let _ = task.await;
@@ -336,6 +366,9 @@ impl Session {
 }
 impl Drop for Session {
     fn drop(&mut self) {
+        if *self.state.borrow() == State::Authenticated {
+            self.state.send_replace(State::Closed);
+        }
         if let Some(task) = self.monitor.take() {
             task.abort();
         }

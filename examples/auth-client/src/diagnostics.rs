@@ -23,6 +23,7 @@ pub enum Stage {
     Loginlist,
     RoomSelection,
     MessageReception,
+    MessageSend,
     RoomPage,
     Shutdown,
     Complete,
@@ -49,6 +50,7 @@ impl Stage {
             Self::Loginlist => "loginlist",
             Self::RoomSelection => "room-selection",
             Self::MessageReception => "message-reception",
+            Self::MessageSend => "message-send",
             Self::RoomPage => "room-page",
             Self::Shutdown => "shutdown",
             Self::Complete => "complete",
@@ -66,6 +68,7 @@ pub struct Milestones {
     pub loginlist: bool,
     pub selected_room: bool,
     pub controlled_message: bool,
+    pub write_acknowledged: bool,
     pub shutdown: bool,
 }
 pub struct Progress {
@@ -96,6 +99,7 @@ impl Progress {
             Stage::Loginlist => m.loginlist = true,
             Stage::RoomSelection => m.selected_room = true,
             Stage::MessageReception => m.controlled_message = true,
+            Stage::MessageSend => m.write_acknowledged = true,
             Stage::Shutdown => m.shutdown = true,
             _ => {}
         }

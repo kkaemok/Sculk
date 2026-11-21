@@ -40,7 +40,7 @@ No live KakaoTalk test has been performed. All passing tests are offline.
 |---|---|---|---|---|
 | Historical LOCO header / BSON | Yes | Golden bytes, properties, invalid/fragmented frames | No | Experimental wire compatibility |
 | GCM type-3 records / RSA type-16 setup | Optional | NIST + Node vectors, RSA decrypting mock servers, record fragmentation/tag failures | No | Experimental source-profile transport; caller-trusted key required |
-| Async stream transport | Yes | Local TCP and in-memory mock server | No | Offline verified |
+| Async stream transport | Direct TCP and HTTP CONNECT | Local TCP with DNS, allowlist and cancellation, plus local CONNECT | No | Explicit route with no automatic fallback |
 | Correlation / deadlines / shutdown | Yes | Out of order, cancellation, failure, overload | No | Offline verified |
 | Bounded raw packet events | Yes | Ordering through driver, explicit lag | No | Diagnostic only |
 | Connector retry policy | Yes | Transient/permanent failure, finite retry, cancellation | No | Provider must establish secure session |
@@ -55,12 +55,12 @@ No live KakaoTalk test has been performed. All passing tests are offline.
 | Native end-to-end developer example | Yes | Build, help/check-config and underlying integrated sequence | No | Runtime --live and explicit account/registration approval required |
 | Secret session persistence | No | No | No | Deferred with authentication |
 | Read-only room page / metadata / members | Optional | Source requests, schema fixtures, exact Int64, status/room/cursor guards | No | Experimental subset; one page/request, no title/member guessing |
-| Text WRITE foundation | Optional offline builder/outcome parser | Actual source request bytes, local TLS acknowledgment/rejection/timeout | No | No high-level live sender; separate authorization required |
+| Historical basic text WRITE | Session API, one-room bot adapter and owner CLI | Local TLS encoding, correlated receipt, rejection, timeout and cancellation | No | Historical basic profile. Current Android and tablet compatibility is unknown. |
 | Typed incoming MSG | Optional | Exact IDs, fields, unknown/malformed retention, lag/cancellation/expiry | No | Historical source subset; no replay guarantee |
 | Join/leave/kick/profile/role events, read marks and moderation | No | No | No | Unsupported; raw packets preserved without inferred actions |
 | OpenChat kick / permissions | No | No | No | Unsupported until verified |
 | Modify departed-member kicked list | No | No | No | No independently verified server operation |
-| Echo / moderation bots | No | No | No | Deferred; no placeholder live bots |
+| Text command bot | SDK adapters | Local TLS MSG through bot dispatch to WRITE | No | Explicit room authorization and proven compatible profile required for deployment |
 | Bounded SYNCMSG / CHATINFO watermark | Optional | Source request bytes, corruption, boundaries, ordering, duplicates and truncation | No | Historical source profile; one finite page, no MCHATLOGS fallback |
 | Processing checkpoint / recent-ID dedup | Optional | Ack boundaries, store failure, restart, old IDs and new lag | No | At-least-once attempts only within supported retained windows; no exactly-once claim |
 | Explicit session reconnect / resubscribe | Optional | Partial-sync resume, cancellation, failure latching and single owner | No | Approved connector required; never automatic credential acquisition or WRITE replay |

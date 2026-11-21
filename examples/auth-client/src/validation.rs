@@ -1,5 +1,5 @@
 //! Concrete selected-room validation used by the owner CLI. Authorization belongs
-//! to its existing terminal gates; this helper never acquires credentials or sends.
+//! to its existing terminal gates.
 use crate::{
     diagnostics::{Progress, Stage},
     ui,
@@ -76,6 +76,38 @@ pub async fn receive_one(
             }
         }
     }
+}
+
+pub async fn send_one(
+    session: &Session,
+    room: RoomId,
+    message: &str,
+    delay: Duration,
+    mut cancel: watch::Receiver<bool>,
+    progress: &Progress,
+) -> Result<(), crate::Failure> {
+    progress.stage.set(Stage::RoomSelection);
+    tokio::select! { biased;
+        _ = ui::cancelled(&mut cancel) => return Err(Box::new(Error::Cancelled)),
+        result = session.room_info(room) => { result.map_err(Error::Room)?; }
+    }
+    progress.completed(Stage::RoomSelection);
+    progress.stage.set(Stage::RoomAuthorization);
+    if !ui::send_approval(room.get(), message, cancel.clone())
+        .await
+        .map_err(|_| crate::fail("terminal send approval unavailable or cancelled"))?
+    {
+        return Err(crate::fail("room or message confirmation declined"));
+    }
+    progress.stage.set(Stage::MessageSend);
+    tokio::select! { biased;
+        _ = ui::cancelled(&mut cancel) => return Err(Box::new(Error::Cancelled)),
+        _ = tokio::time::sleep(delay) => {}
+    }
+    session.send_text(room, message, cancel).await?;
+    progress.completed(Stage::MessageSend);
+    println!("The authenticated peer acknowledged one WRITE.");
+    Ok(())
 }
 
 #[cfg(test)]

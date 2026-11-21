@@ -58,6 +58,21 @@ pub enum MessageType {
     /// Other raw type, including deleted-message flags.
     Unknown(i32),
 }
+impl MessageType {
+    /// Exact numeric chatLog.type, including unknown flags and values.
+    pub fn wire_type(self) -> i32 {
+        match self {
+            Self::Feed => 0,
+            Self::Text => 1,
+            Self::Photo => 2,
+            Self::Video => 3,
+            Self::Audio => 5,
+            Self::File => 18,
+            Self::Reply => 26,
+            Self::Unknown(value) => value,
+        }
+    }
+}
 impl From<i32> for MessageType {
     fn from(value: i32) -> Self {
         match value {
@@ -367,9 +382,7 @@ impl Events {
     }
 }
 
-/// Offline text WRITE builder. This milestone exposes no high-level live send
-/// method or CLI send flag. Encoding alone sends nothing. Low-level Session::request
-/// remains caller-controlled and must not be used live without separate approval.
+/// Encoder for the historical basic text WRITE request.
 pub struct TextRequest {
     room: RoomId,
     text: String,
@@ -398,12 +411,10 @@ impl TextRequest {
     /// Local policy: nonempty text, at most 16 KiB UTF-8, no NUL. This is not a
     /// researched server message-length limit. No splitting or bulk sending.
     pub fn new(room: RoomId, text: String) -> Result<Self, SendError> {
-        if text.is_empty() || text.len() > 16384 || text.contains('\0') {
-            return Err(SendError::InvalidRequest);
-        }
+        validate_text(&text)?;
         Ok(Self { room, text })
     }
-    /// Encode Agent Messenger's exact text profile: chatId:Int64, msg:String,
+    /// Encode Agent Messenger's historical basic text profile: chatId:Int64, msg:String,
     /// type:Int32(1), noSeen:false. No synthetic client msgId or attachment.
     pub fn packet(&self) -> Result<Packet, SendError> {
         Packet::from_document(
@@ -482,6 +493,72 @@ impl std::fmt::Debug for TextRequest {
         f.write_str("TextRequest([REDACTED])")
     }
 }
+/// Text-only handle to one authenticated session. The owning session controls
+/// shutdown and expiration even when a handle is retained by an application.
+pub struct TextSender {
+    client: crate::Client,
+    state: watch::Receiver<State>,
+    deadline: Instant,
+}
+
+impl TextSender {
+    pub(crate) fn new(
+        client: crate::Client,
+        state: watch::Receiver<State>,
+        deadline: Instant,
+    ) -> Self {
+        Self {
+            client,
+            state,
+            deadline,
+        }
+    }
+
+    /// Submit once, correlate the reply and require a room-bound acknowledgment.
+    /// Cancelling after admission conservatively returns unknown delivery.
+    pub async fn send_text(
+        &self,
+        room: RoomId,
+        text: &str,
+        mut cancel: watch::Receiver<bool>,
+    ) -> Result<TextReceipt, SendError> {
+        validate_text(text)?;
+        if *cancel.borrow()
+            || cancel.has_changed().is_err()
+            || *self.state.borrow() != State::Authenticated
+            || self.deadline <= Instant::now()
+            || self.client.state() != crate::ConnectionState::Connected
+        {
+            return Err(SendError::NotSent);
+        }
+        let request = TextRequest {
+            room,
+            text: text.to_owned(),
+        };
+        let packet = request.packet()?;
+        if *cancel.borrow() || cancel.has_changed().is_err() {
+            return Err(SendError::NotSent);
+        }
+        let response = self.client.submit(packet).map_err(|_| SendError::NotSent)?;
+        tokio::select! { biased;
+            _ = crate::recovery::cancelled(&mut cancel) => Err(SendError::DeliveryUnknown),
+            result = tokio::time::timeout_at(self.deadline, response) => {
+                request.outcome(
+                    result.unwrap_or(Err(crate::Error::Timeout))
+                        .map_err(crate::session::RequestError::Transport),
+                )
+            }
+        }
+    }
+}
+
+fn validate_text(text: &str) -> Result<(), SendError> {
+    if text.is_empty() || text.len() > 16384 || text.contains('\0') {
+        return Err(SendError::InvalidRequest);
+    }
+    Ok(())
+}
+
 /// Server acknowledgment subset; no end-to-end receipt or exactly-once guarantee.
 #[derive(Debug, PartialEq, Eq)]
 pub struct TextReceipt {

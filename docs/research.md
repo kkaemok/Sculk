@@ -470,3 +470,31 @@ Also refetched openkakao-cli and KiwiTalk: their HEADs remain respectively
 `6ca6ea2fd05a6660c4a80c0b61b43b416653d1d5` and
 `4e565ca6bfff72f6085f1b0a4a767558c78ff450`; no newer LOCO/authentication evidence
 was available there. Their previously documented platform/transport caveats remain.
+
+## Reference refresh on 2026-11-21
+
+These revisions were fetched from GitHub and inspected without running any
+third-party client or making KakaoTalk requests.
+
+| Reference | Revision | License and inspected source |
+|---|---|---|
+| [Agent Messenger](https://github.com/agent-messenger/agent-messenger/tree/abc81f9873da06ab13503e5124c68fde036c0e9b) | `abc81f9873da06ab13503e5124c68fde036c0e9b` | MIT. Inspect `src/platforms/kakaotalk/protocol/{session,send-response}.ts`, `protocol/NOTICE.md`, and `listener.ts` for role-specific transport, WRITE and raw pushes. |
+| [node-kakao](https://github.com/storycraft/node-kakao/tree/8512e4699e2cd4c26516b80d38b57b2f85a6cc8a) | `8512e4699e2cd4c26516b80d38b57b2f85a6cc8a` | MIT. `src/packet/chat/write.ts` describes flat room-bound acknowledgment. |
+| [KiwiTalk](https://github.com/KiwiTalk/KiwiTalk/tree/4e565ca6bfff72f6085f1b0a4a767558c78ff450) | `4e565ca6bfff72f6085f1b0a4a767558c78ff450` | Apache-2.0. `backend/crates/talk-api-internal/src/auth/mod.rs` and `backend/crates/talk-loco-client/src/talk/session/login.rs` document a separate historical profile. |
+| [OpenKakao CLI](https://github.com/JungHoonGhae/openkakao-cli/tree/d4fc0ac94d49696872fa2cacca7cc2fe9910a987) | `d4fc0ac94d49696872fa2cacca7cc2fe9910a987` | MIT. `src/auth_flow.rs` and `website/content/docs/getting-started/authentication.mdx` describe the newer macOS flow and document failure of the direct new-device path. |
+| [KakaoForge](https://github.com/aodjo/KakaoForge/tree/f1f44d3cef15d387925f508f3f96a909f173e291) | `f1f44d3cef15d387925f508f3f96a909f173e291` | Custom noncommercial/no-abuse license. This checkout contains documentation and a license only. |
+
+Agent Messenger retains the historical basic WRITE body for its PC role without
+explicit options. Its newer tablet role selects TLS with a specific service
+identity and includes `msgId`, `scope`, `silence` and `extra` in WRITE.
+Upstream reports tablet observations in its notice. The Sculk Android provider
+still selects the older source-derived Booking/TLS and Checkin/chat GCM route.
+Compatibility of that specific provider and the historical WRITE format is
+unknown. Sculk uses one selected transport and request schema per operation.
+
+Agent Messenger models `KICKMEM` for a present member, `KLSYNC` for reading
+a link's kick list, and `KLDELITEM` for removing an entry. None of those
+operations supplies evidence for adding a departed member to the native list.
+Its listener's `NEWMEM` and `DELMEM` handling reads `chatLog.authorId`;
+there is insufficient corroboration to distinguish voluntary leave from a
+kick or verify OpenChat room identity with those fields.

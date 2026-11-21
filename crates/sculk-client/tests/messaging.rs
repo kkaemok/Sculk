@@ -394,3 +394,55 @@ fn unicode_text_and_raw_attachments_roundtrip_and_invalid_utf8_is_rejected() {
     invalid[position] = 0xff;
     assert!(Packet::from_bytes(0, 0, Command::new("MSG").unwrap(), invalid.into()).is_err());
 }
+
+#[tokio::test]
+async fn authenticated_sender_correlates_room_ack_rejection_and_cancellation_without_retry() {
+    let (mut session, mut peer) = setup(4, Duration::from_secs(30)).await;
+    let sender = session.text_sender().unwrap();
+    let room = RoomId::new(ID).unwrap();
+    let (stop, cancel) = watch::channel(true);
+    assert_eq!(
+        sender
+            .send_text(room, "synthetic", cancel.clone())
+            .await
+            .unwrap_err(),
+        SendError::NotSent,
+    );
+    stop.send_replace(false);
+    let (result, ()) = tokio::join!(session.send_text(room, "안녕", cancel.clone()), async {
+        let req = peer.next().await.unwrap().unwrap();
+        assert_eq!(req.command.as_str(), "WRITE");
+        assert_eq!(
+            req.document().unwrap(),
+            doc! {"chatId":ID,"msg":"안녕","type":1,"noSeen":false}
+        );
+        let mut ack = packet("WRITE", doc! {"chatId":ID,"logId":ID+1,"sendAt":5_i64});
+        ack.id = req.id;
+        peer.send(ack).await.unwrap();
+    });
+    assert_eq!(result.unwrap().id.get(), ID + 1);
+    let (result, ()) = tokio::join!(sender.send_text(room, "synthetic", cancel.clone()), async {
+        let req = peer.next().await.unwrap().unwrap();
+        let mut rejected = packet("WRITE", doc! {"status":-32});
+        rejected.id = req.id;
+        peer.send(rejected).await.unwrap();
+    });
+    assert_eq!(result.unwrap_err(), SendError::Rejected(-32));
+    let (result, ()) = tokio::join!(sender.send_text(room, "cancelled", cancel.clone()), async {
+        assert_eq!(
+            peer.next().await.unwrap().unwrap().command.as_str(),
+            "WRITE"
+        );
+        stop.send_replace(true);
+    });
+    assert_eq!(result.unwrap_err(), SendError::DeliveryUnknown);
+    assert!(tokio::time::timeout(Duration::from_millis(20), peer.next())
+        .await
+        .is_err());
+    session.disconnect_checked().await.unwrap();
+    stop.send_replace(false);
+    assert_eq!(
+        sender.send_text(room, "closed", cancel).await.unwrap_err(),
+        SendError::NotSent
+    );
+}

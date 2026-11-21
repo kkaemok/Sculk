@@ -134,12 +134,12 @@ subscriber-held packets require a deployment budget. Lag is explicit and must be
 reconciled before processing relies on continuity. Receive subscriptions have a
 fixed authenticated lease, cancellation and transport-state guards.
 
-Text encoding performs no networking. No high-level live sender or CLI send option
-was added, and live writes still require separate owner authorization. Timeout,
-expiry, interruption and invalid acknowledgments never trigger a resend. A valid
-WRITE acknowledgment is not recipient delivery, a read receipt or exactly-once
-proof. The owner receive-only window records counts, while reports add static
-failure categories; raw message/HTTP errors and personal content are not serialized.
+Text encoding is an offline operation. The authenticated session can submit
+one historical WRITE after explicit application selection. The owner CLI
+requires per-run room and text confirmation. The bot adapter uses a selected
+room boundary and bounded attempt rate. The driver never retries an ambiguous
+submission. Correlated replies must validate the requested room and typed
+acknowledgment fields.
 
 ## Phase 7 review
 

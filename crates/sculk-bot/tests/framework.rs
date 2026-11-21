@@ -615,7 +615,6 @@ async fn managed_adapter_does_not_authenticate_or_reconnect_inactive_room() {
     assert_eq!(report.shutdown, Ok(()));
 }
 
-#[cfg(feature = "managed-client")]
 #[path = "../../sculk-client/tests/support/mod.rs"]
 mod tls_support;
 #[cfg(feature = "managed-client")]
@@ -782,4 +781,121 @@ async fn dropping_active_runner_drops_source_and_handler_without_tasks() {
     }
     assert!(source_dropped.load(Ordering::SeqCst));
     assert!(handler_dropped.load(Ordering::SeqCst));
+}
+
+#[tokio::test]
+async fn selected_tls_room_dispatches_one_command_and_obtains_a_write_receipt() {
+    use futures_util::{SinkExt, StreamExt};
+    use sculk_client::session::{AccessToken, Grant, Session};
+    use sculk_protocol::{Command as WireCommand, LocoCodec, Packet};
+    use tokio::time::{timeout, Instant};
+    use tokio_util::codec::Framed;
+
+    let (settings, acceptor) = tls_support::tls_pair();
+    let (a, b) = tokio::io::duplex(8192);
+    let (stop, cancel) = watch::channel(false);
+    let (session, peer) = tokio::join!(
+        Session::establish(
+            a,
+            "localhost",
+            &settings,
+            Duration::from_secs(1),
+            Default::default(),
+            cancel.clone()
+        ),
+        acceptor.accept(b)
+    );
+    let mut session = session.unwrap();
+    let mut peer = Framed::new(peer.unwrap(), LocoCodec::default());
+    session
+        .authenticate_with(
+            AccessToken::new(
+                "synthetic".into(),
+                42,
+                Instant::now() + Duration::from_secs(30),
+            )
+            .unwrap(),
+            Duration::from_secs(1),
+            cancel.clone(),
+            |_, _| async {
+                Ok(Grant {
+                    user_id: 42,
+                    valid_for: Duration::from_secs(10),
+                })
+            },
+        )
+        .await
+        .unwrap();
+    let room = RoomId::new(i64::MAX).unwrap();
+    let acknowledged = Arc::new(Notify::new());
+    let capture = acknowledged.clone();
+    let application = async {
+        let source = sculk_bot::SessionSource::select(session, room, cancel.clone())
+            .await
+            .unwrap();
+        let mut bot = Bot::new(Config::default()).unwrap();
+        bot.outbound(Arc::new(
+            source.text_outbound(Duration::from_secs(1)).unwrap(),
+        ));
+        bot.command("ping", move |ctx| {
+            let capture = capture.clone();
+            async move {
+                let OutboundReceipt::ServerAcknowledged(ack) = ctx.reply("Pong!").await? else {
+                    panic!("missing peer evidence");
+                };
+                assert_eq!(ack.room, room);
+                assert_eq!(ack.id.get(), room.get() - 2);
+                assert_eq!(
+                    ctx.reply("rate limited").await.unwrap_err(),
+                    OutboundError::NotSent
+                );
+                capture.notify_one();
+                Ok(())
+            }
+        })
+        .unwrap();
+        bot.run(source, cancel).await
+    };
+    let fake_peer = async {
+        let info = peer.next().await.unwrap().unwrap();
+        assert_eq!(info.command.as_str(), "CHATINFO");
+        let response = Packet::from_document(
+            info.id,
+            info.command,
+            &bson::doc! { "chatInfo": { "chatId": i64::MAX } },
+        )
+        .unwrap();
+        peer.send(response).await.unwrap();
+        for (chat, id) in [(1, 8), (i64::MAX, 9)] {
+            let Event::Message(message) = message(chat, 2, id, "!ping") else {
+                unreachable!()
+            };
+            peer.send(message.packet().clone()).await.unwrap();
+        }
+        let write = peer.next().await.unwrap().unwrap();
+        assert_eq!(write.command.as_str(), "WRITE");
+        assert_eq!(write.document().unwrap().get_str("msg"), Ok("Pong!"));
+        peer.send(
+            Packet::from_document(
+                write.id,
+                WireCommand::new("WRITE").unwrap(),
+                &bson::doc! { "chatId": i64::MAX, "logId": i64::MAX - 2, "sendAt": 5_i64 },
+            )
+            .unwrap(),
+        )
+        .await
+        .unwrap();
+        acknowledged.notified().await;
+        stop.send_replace(true);
+        assert!(peer.next().await.is_none());
+    };
+    let (report, ()) = timeout(Duration::from_secs(3), async {
+        tokio::join!(application, fake_peer)
+    })
+    .await
+    .unwrap();
+    assert_eq!(
+        (report.commands, report.failures, report.shutdown),
+        (1, 0, Ok(()))
+    );
 }

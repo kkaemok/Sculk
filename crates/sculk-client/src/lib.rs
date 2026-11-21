@@ -198,6 +198,14 @@ impl Client {
     /// Send once and correlate the response by both ID and command. The packet ID
     /// is assigned internally and is never reused on a stream. No retries occur.
     pub async fn request(&self, packet: Packet) -> Result<Packet, Error> {
+        self.submit(packet)?.await
+    }
+
+    // Separate bounded admission from awaiting a possibly executed request.
+    fn submit(
+        &self,
+        packet: Packet,
+    ) -> Result<impl std::future::Future<Output = Result<Packet, Error>> + use<>, Error> {
         let deadline = Instant::now() + self.timeout;
         let (reply, rx) = oneshot::channel();
         self.tx
@@ -210,10 +218,12 @@ impl Client {
                 mpsc::error::TrySendError::Full(_) => Error::Overloaded,
                 mpsc::error::TrySendError::Closed(_) => Error::Closed,
             })?;
-        time::timeout_at(deadline, rx)
-            .await
-            .map_err(|_| Error::Timeout)?
-            .map_err(|_| Error::Closed)?
+        Ok(async move {
+            time::timeout_at(deadline, rx)
+                .await
+                .map_err(|_| Error::Timeout)?
+                .map_err(|_| Error::Closed)?
+        })
     }
     /// Close the stream, resolve outstanding requests, and wait for driver exit.
     pub async fn disconnect(&self) {

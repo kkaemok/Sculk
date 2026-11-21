@@ -1,5 +1,5 @@
-//! Minimal approved HTTP CONNECT dialer for the native LOCO byte streams.
-//! No direct-network fallback, DNS suffix guessing, or proxy authentication secrets.
+//! Explicit TCP routes for native LOCO byte streams. Each route enforces the same
+//! destination policy and never falls back to another route.
 use crate::connect::Endpoint;
 use std::{io, time::Duration};
 use tokio::{
@@ -7,6 +7,51 @@ use tokio::{
     net::TcpStream,
     sync::watch,
 };
+/// Direct TCP with system DNS and an exact host/port allowlist.
+pub struct DirectTcp {
+    allowed: Vec<Endpoint>,
+    timeout: Duration,
+}
+
+impl DirectTcp {
+    /// Validate a finite destination policy and a DNS/connect deadline.
+    pub fn new(allowed: Vec<Endpoint>, timeout: Duration) -> io::Result<Self> {
+        validate_policy(&allowed, timeout)?;
+        Ok(Self { allowed, timeout })
+    }
+
+    /// Resolve and connect only after checking the requested host and port.
+    /// DNS results follow the host resolver's trust policy. Secure protocol
+    /// establishment and peer identity verification are performed by the caller.
+    pub async fn dial(
+        &self,
+        endpoint: Endpoint,
+        mut cancel: watch::Receiver<bool>,
+    ) -> io::Result<TcpStream> {
+        if !self.allowed.contains(&endpoint) {
+            return Err(io::ErrorKind::PermissionDenied.into());
+        }
+        let connect = TcpStream::connect((endpoint.host(), endpoint.port()));
+        tokio::select! { biased;
+            _ = crate::recovery::cancelled(&mut cancel) => Err(io::ErrorKind::Interrupted.into()),
+            result = tokio::time::timeout(self.timeout, connect) => {
+                result.unwrap_or_else(|_| Err(io::ErrorKind::TimedOut.into()))
+            }
+        }
+    }
+}
+
+fn validate_policy(allowed: &[Endpoint], timeout: Duration) -> io::Result<()> {
+    if allowed.is_empty()
+        || allowed.len() > 128
+        || timeout.is_zero()
+        || timeout > Duration::from_secs(60)
+    {
+        return Err(io::ErrorKind::InvalidInput.into());
+    }
+    Ok(())
+}
+
 /// Explicitly configured TCP proxy and exact allowed destination pairs.
 /// Use the managed TCP forwarding proxy when required by environment policy.
 pub struct ConnectProxy {
@@ -24,13 +69,7 @@ impl ConnectProxy {
         timeout: Duration,
     ) -> io::Result<Self> {
         Endpoint::new(&host, port).map_err(|_| io::ErrorKind::InvalidInput)?;
-        if allowed.is_empty()
-            || allowed.len() > 128
-            || timeout.is_zero()
-            || timeout > Duration::from_secs(60)
-        {
-            return Err(io::ErrorKind::InvalidInput.into());
-        }
+        validate_policy(&allowed, timeout)?;
         Ok(Self {
             host,
             port,

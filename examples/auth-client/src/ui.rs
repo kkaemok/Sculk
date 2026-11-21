@@ -52,10 +52,14 @@ pub async fn registration_approval(cancel: watch::Receiver<bool>) -> io::Result<
     let mut tty = terminal()?;
     writeln!(tty,"New sub-device registration requested. Confirm only for your authorized account.\nType register to authorize challenge generation and bounded confirmation polling:")?;
     tty.flush()?;
-    confirmation_from_file(tty, cancel).await
+    confirmation_from_file(tty, cancel, b"register").await
 }
 #[cfg(unix)]
-async fn confirmation_from_file(tty: File, mut cancel: watch::Receiver<bool>) -> io::Result<bool> {
+async fn confirmation_from_file(
+    tty: File,
+    mut cancel: watch::Receiver<bool>,
+    answer: &[u8],
+) -> io::Result<bool> {
     // SAFETY: this owned File stays exclusively inside the local AsyncFd. No code
     // replaces/closes it or exposes its raw descriptor before the AsyncFd drops.
     let tty = unsafe { tokio::io::unix::AsyncFd::register(tty) }.map_err(io::Error::from)?;
@@ -75,7 +79,7 @@ async fn confirmation_from_file(tty: File, mut cancel: watch::Receiver<bool>) ->
                 return Err(io::ErrorKind::UnexpectedEof.into());
             }
             if byte.1 == b'\n' {
-                return Ok(input.as_slice() == b"register" || input.as_slice() == b"register\r");
+                return Ok(input.strip_suffix(b"\r").unwrap_or(&input) == answer);
             }
             if input.len() >= 64 {
                 return Err(io::ErrorKind::InvalidInput.into());
@@ -90,6 +94,33 @@ async fn confirmation_from_file(tty: File, mut cancel: watch::Receiver<bool>) ->
 }
 #[cfg(not(unix))]
 pub async fn registration_approval(_cancel: watch::Receiver<bool>) -> io::Result<bool> {
+    Err(io::ErrorKind::Unsupported.into())
+}
+
+/// Review the exact room or escaped message only on the controlling terminal.
+#[cfg(unix)]
+pub async fn send_approval(
+    room: i64,
+    text: &str,
+    cancel: watch::Receiver<bool>,
+) -> io::Result<bool> {
+    let mut tty = terminal()?;
+    writeln!(
+        tty,
+        "Confirm the configured room {room} and your authorization to send there. Type room:"
+    )?;
+    tty.flush()?;
+    if !confirmation_from_file(tty, cancel.clone(), b"room").await? {
+        return Ok(false);
+    }
+    let mut tty = terminal()?;
+    writeln!(tty, "Review the exact test message (escaped): {text:?}\nType send to submit once using the historical basic WRITE profile:")?;
+    tty.flush()?;
+    confirmation_from_file(tty, cancel, b"send").await
+}
+
+#[cfg(not(unix))]
+pub async fn send_approval(_: i64, _: &str, _: watch::Receiver<bool>) -> io::Result<bool> {
     Err(io::ErrorKind::Unsupported.into())
 }
 
@@ -110,7 +141,7 @@ mod tests {
         let (file, mut peer) = pair();
         let (tx, cancel) = watch::channel(false);
         peer.write_all(b"regis").unwrap();
-        let task = tokio::spawn(confirmation_from_file(file, cancel));
+        let task = tokio::spawn(confirmation_from_file(file, cancel, b"register"));
         tokio::task::yield_now().await;
         tx.send(true).unwrap();
         assert_eq!(
@@ -140,7 +171,9 @@ mod tests {
             let (_tx, cancel) = watch::channel(false);
             peer.write_all(input).unwrap();
             assert_eq!(
-                confirmation_from_file(file, cancel).await.unwrap(),
+                confirmation_from_file(file, cancel, b"register")
+                    .await
+                    .unwrap(),
                 expected
             );
         }
@@ -148,7 +181,7 @@ mod tests {
         let (_tx, cancel) = watch::channel(false);
         peer.write_all(&[b'x'; 65]).unwrap();
         assert_eq!(
-            confirmation_from_file(file, cancel)
+            confirmation_from_file(file, cancel, b"register")
                 .await
                 .unwrap_err()
                 .kind(),

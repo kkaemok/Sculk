@@ -356,3 +356,27 @@ A successful HTTP authentication, LOGINLIST, selected-room query, controlled rec
 and local close are separate evidence. AsyncWrite shutdown completion is a local
 transport result, not a server logout acknowledgment or recipient-delivery claim.
 All live milestones remain untested in the Phase 8 development environment.
+
+
+## Direct TCP and the controlled send stage
+
+Existing private JSON configurations select HTTP CONNECT by default.
+Set `"connection_mode": "direct"` and omit both `tcp_proxy_host` and
+`tcp_proxy_port` to choose system DNS and outbound TCP on an authorized route.
+Either mode requires an exact `allowed_endpoints` list that covers Booking and
+each independently approved server-assigned destination. A route failure stops
+the attempt. Apply any network-level address restrictions at the host firewall
+or approved egress provider.
+
+After independently validating routing, credentials, protocol profile and
+controlled reception, the account owner can invoke the single-message check.
+Use the private configuration and text file described in [messaging](messaging.md).
+
+```sh
+cargo run -p sculk-auth-client --locked --features live --   --live /absolute/private/config.json --send-one 5 --report /absolute/private/send-report.json
+```
+
+Complete the interactive account flow and confirm the shown room and escaped
+message in the controlling terminal. The report's `milestones.write_acknowledged`
+flag records a correlated peer acknowledgment. This uses the historical basic
+WRITE profile and requires owner testing of current server acceptance.

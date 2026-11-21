@@ -1,5 +1,5 @@
-//! Bounded bot dispatch over the existing Sculk client. No account authentication,
-//! live WRITE adapter, interpreter or automatic recovery is started by this crate.
+//! Bounded bot dispatch over the existing Sculk client with explicit event and
+//! outbound adapters for authenticated sessions and offline tests.
 //! See `docs/bot.md` for ordering, failure and delivery semantics.
 //!
 //! ```
@@ -19,6 +19,7 @@ mod command;
 mod permissions;
 mod prefix;
 mod runtime;
+mod session;
 mod source;
 
 pub use command::valid_name as valid_command_name;
@@ -33,6 +34,7 @@ pub use sculk_client::{
     session::{AuthError, State as SessionState},
     synchronization::{Cursor, Gap},
 };
+pub use session::{SelectRoomError, SessionOutbound, SessionSource};
 #[cfg(feature = "managed-client")]
 pub use source::ManagedSource;
 pub use source::{channel, ChannelSource, EventSource, SourceError};
@@ -112,7 +114,7 @@ impl EventKind {
 pub enum OutboundReceipt {
     /// Only a mock adapter accepted the text. Nothing reached KakaoTalk.
     MockAccepted,
-    /// Reserved for an explicitly supplied adapter with actual server evidence.
+    /// The authenticated peer acknowledged one WRITE with room-bound evidence.
     ServerAcknowledged(TextReceipt),
 }
 /// No raw payload/error source is included in default diagnostics.
@@ -124,11 +126,17 @@ pub enum OutboundError {
     /// Local adapter capacity/policy refusal before submission.
     #[error("outbound request not submitted")]
     NotSent,
-    /// Cancellation/timeout after submission can leave delivery unknown.
+    /// The peer explicitly rejected the request with a protocol status.
+    #[error("outbound request rejected with status {0}")]
+    Rejected(i64),
+    /// Acknowledgment deadline elapsed after admission.
+    #[error("outbound deadline elapsed; delivery unknown; do not automatically resend")]
+    TimeoutUnknown,
+    /// Cancellation, connection loss or an invalid acknowledgment can leave delivery unknown.
     #[error("outbound delivery unknown; do not automatically resend")]
     DeliveryUnknown,
 }
-/// Explicit application-supplied send boundary. No built-in live implementation.
+/// Explicit application-configured send boundary.
 /// Adapters must not retry non-idempotent requests and must be drop-safe.
 pub trait Outbound: Send + Sync {
     /// Submit once; mock acceptance is never a real server acknowledgment.
