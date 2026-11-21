@@ -172,3 +172,40 @@ shutdown success versus already-ended, transport failure, deadline and abort out
 The existing disconnect methods remain available. Failed writes are still dropped
 without implicit flush/replay. The validation CLI uses checked shutdown so a timeout
 or failed close cannot silently become a verified clean-close milestone.
+
+## Live executable processing and recovery
+
+The live runner uses one managed Room, a caller-scheduled PING, a bounded
+event ring and the existing FileStore. The owner-auth path holds a kernel
+lock alongside the device file across authorization and all reconnects.
+An initial uninitialized store records the selected room's authenticated
+CHATINFO watermark, including a durable zero for an empty room.
+
+On reconnect and detected gaps, the runner checks the new watermark and fetches
+bounded SYNCMSG pages from the committed checkpoint. It validates and classifies
+historical logs as read-only. The validated page prefix is committed before
+processing continues. A missing or truncated boundary stops the run. Recent IDs
+and the verified boundary suppress overlap between history and live subscriptions.
+An acknowledgment's log ID suppresses self echoes within the retained in-memory
+window. Rooms where the server omits the expected watermark or predecessor data
+may not support live script dispatch with this profile.
+
+For new linked live messages, the bot applies its command and permission rules.
+The runner commits the processed cursor only after dispatch completes, treating
+intentional policy skips as completed decisions, and after any live counter
+state is written. A separate FileStore under write-attempts records the latest
+trigger allowed to attempt an outbound effect. It is committed before the
+handler can submit a WRITE, even if the handler eventually sends nothing.
+In-flight cancellation is treated as unknown. A new process never invokes
+handlers at or below that boundary, and a watermark behind it requires
+intervention. A WRITE acknowledgment, counter save and processed checkpoint are
+independent operations. Neither history reconciliation nor restart guarantees
+execution of commands missed while disconnected.
+
+The runner uses conservative pre-login retry classification, verified in-memory
+credentials and bounded exponential backoff. Flapping sessions stop after five
+recovery incidents in a sequence of unstable sessions. Credential expiry ends
+the run and requires a new owner-authorized start. At most one startup refresh
+can be explicitly requested through --refresh. SIGINT and SIGTERM cancel
+receives and handlers, finish any ongoing local commit and request a bounded
+clean close. The journal records if the close could not be confirmed.

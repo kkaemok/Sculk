@@ -1,0 +1,21 @@
+name: Native Linux validation
+on: workflow_dispatch
+permissions:
+  contents: read
+
+jobs:
+  native:
+    strategy:
+      fail-fast: false
+      matrix:
+        runner: [ubuntu-24.04, ubuntu-24.04-arm]
+    runs-on: ${{ matrix.runner }}
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@master
+        with:
+          toolchain: 1.100.0
+      - run: uname -m && rustc -Vv
+      - run: cargo test --workspace --all-features --locked
+      - run: cargo build -p sculk --release --features live-validation --locked
+      - run: scripts/benchmark-storage.sh target/release/sculk

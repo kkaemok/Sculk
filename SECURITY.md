@@ -240,3 +240,19 @@ and OS entropy. Private-key operations remain confined to synthetic peers.
 [SQLite](https://rustsec.org/advisories/RUSTSEC-2026-0459.html) ·
 [rustix](https://rustsec.org/advisories/RUSTSEC-2026-0486.html) ·
 [RSA](https://rustsec.org/advisories/RUSTSEC-2023-0071.html).
+
+## Owner-authorized live runtime
+
+The live entry points load owner-private account settings and hold a kernel
+lock on the approved device identity. Continuous operation requires the
+operator's recorded profile validation. Account and write consent are distinct
+in the interactive path. The service consumes a time-limited, scope-checked
+credential prepared by the explicit launcher. The staging file is root-private
+under /run and removed at startup. The service cannot create or force-register
+a device, and the unit has automatic restarts disabled.
+
+The executable treats historical logs as read-only when advancing recovery.
+Before scripts can send, it durably records the trigger boundary in the separate
+write-attempt store. Unknown delivery and dropped pending sends stop the runner.
+The device lock does not change the service identity or authorize another login.
+A processed cursor, SQLite transaction and remote acknowledgment remain separate.

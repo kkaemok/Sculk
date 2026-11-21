@@ -1,0 +1,17 @@
+{
+  "expected_user_id": 0,
+  "email": "",
+  "device_file": "/var/lib/sculk/device/identity",
+  "server_key_file": "/etc/sculk/private/loco-public.der",
+  "server_key_sha256": "",
+  "connection_mode": "direct",
+  "allowed_endpoints": [
+    {"host": "booking-loco.kakao.com", "port": 443}
+  ],
+  "app_version": "",
+  "os_version": "",
+  "api_level": "",
+  "device_name": "",
+  "test_room_id": 0,
+  "profile_validated": false
+}

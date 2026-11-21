@@ -1,0 +1,16 @@
+[bot]
+scripts = "/etc/sculk/scripts"
+default_prefixes = ["!", "/"]
+
+[limits]
+event_capacity = 16
+handler_ms = 7000
+
+[storage]
+enabled = true
+path = "/var/lib/sculk/counters/sculk.db"
+
+[live]
+checkpoint_dir = "/var/lib/sculk/checkpoint"
+enable_write = false
+write_interval_seconds = 2

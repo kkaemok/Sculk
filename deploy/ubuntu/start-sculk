@@ -1,0 +1,47 @@
+#!/bin/sh
+# Run by an authorized operator with a terminal. The unit has no boot target.
+set -eu
+
+case "$*" in
+    "") scope=sculk-read-only ;;
+    "--write") scope=sculk-write ;;
+    *) echo "Usage: start-sculk [--write]" >&2; exit 2 ;;
+esac
+
+if [ "$(id -u)" != 0 ] || [ ! -t 0 ] || [ ! -t 2 ]; then
+    echo "Start from an authorized administrator terminal." >&2
+    exit 1
+fi
+
+umask 077
+dir=/run/sculk-operator
+install -d -m 0700 -o root -g root "$dir"
+exec 9>"$dir/start.lock"
+flock -n 9 || { echo "Another operator is starting Sculk." >&2; exit 1; }
+case "$(systemctl show -p ActiveState --value sculk.service)" in
+    inactive|failed) ;;
+    *) echo "Sculk is already running or changing state." >&2; exit 1 ;;
+esac
+
+printf '%s\n' 'Confirm you own the configured account and have authorized the selected room.' >&2
+printf '%s' 'Type authorize to begin this start: ' >&2
+IFS= read -r answer
+[ "$answer" = authorize ] || exit 1
+if [ "$scope" = sculk-write ]; then
+    printf '%s' 'Type write to authorize the configured scripts to send text in the selected room: ' >&2
+    IFS= read -r answer
+    [ "$answer" = write ] || exit 1
+fi
+
+pending="$(mktemp "$dir/approval.XXXXXX")"
+cleanup() { rm -f -- "$pending" "$dir/approval"; }
+trap cleanup EXIT
+trap 'exit 1' HUP INT TERM
+input="$(mktemp "$dir/input.XXXXXX")"
+cleanup() { rm -f -- "$pending" "$input" "$dir/approval"; }
+systemd-ask-password --timeout=120s 'Sculk account password for this start' > "$input"
+printf '%s\n%s\n' "$scope" "$(date +%s)" > "$pending"
+cat -- "$input" >> "$pending"
+rm -f -- "$input"
+mv -T -- "$pending" "$dir/approval"
+systemctl start sculk.service

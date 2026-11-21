@@ -1,11 +1,12 @@
 # Sculk
 
 Sculk is an independent Rust SDK and bot runtime for KakaoTalk experimentation,
-licensed **MIT OR Apache-2.0**. The bot framework and compiled scripts run
-offline without an account. The native SDK implements an experimental
-authenticated LOCO path and text dispatch, tested against local protocol peers.
-Current KakaoTalk service compatibility awaits account-owner validation.
-[Compatibility](docs/compatibility.md) · [Protocol research](docs/research.md)
+licensed **MIT OR Apache-2.0**. The executable runs compiled scripts offline
+and has an owner-authorized Unix live runner with one-room recovery, durable
+checkpoints and an Ubuntu systemd service. The authenticated flow has been
+tested with local protocol peers. Current KakaoTalk compatibility awaits
+account-owner validation. [Compatibility](docs/compatibility.md) ·
+[Protocol research](docs/research.md)
 
 ~~~sh
 cargo install --path apps/sculk --locked

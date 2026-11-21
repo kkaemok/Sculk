@@ -1,5 +1,14 @@
 # Compatibility matrix
 
+## Live runner status
+
+The executable can run the exact owner-approved profile and room through
+managed recovery and durable checkpoints. Local TLS peers verify source-shaped
+GETCONF, CHECKIN, LOGINLIST, CHATINFO, SYNCMSG, MSG and WRITE paths and
+generation changes. The real service's profile, watermark and predecessor
+behavior still require owner validation. [Runtime](runtime.md) ·
+[Owner checks](authentication.md).
+
 ## Current implementation
 
 The Sculk executable runs compiled script bots offline, including room

@@ -1,0 +1,39 @@
+[Unit]
+Description=Sculk owner-authorized OpenChat bot
+Wants=network-online.target
+After=network-online.target
+
+[Service]
+Type=exec
+User=sculk
+Group=sculk
+WorkingDirectory=/etc/sculk
+ExecStart=/usr/local/bin/sculk --config /etc/sculk/sculk.toml run --live-service /etc/sculk/private/auth.json
+LoadCredential=sculk-approval:/run/sculk-operator/approval
+# PID 1 has copied the single-use input before the service process starts.
+ExecStartPost=+/usr/bin/rm -f -- /run/sculk-operator/approval
+ExecStopPost=+/usr/bin/rm -f -- /run/sculk-operator/approval
+StateDirectory=sculk
+StateDirectoryMode=0700
+UMask=0077
+Restart=no
+TimeoutStopSec=20s
+KillSignal=SIGTERM
+
+NoNewPrivileges=yes
+ProtectSystem=strict
+ReadWritePaths=-/run/sculk-operator
+ProtectHome=yes
+PrivateTmp=yes
+PrivateDevices=yes
+ProtectKernelTunables=yes
+ProtectKernelModules=yes
+ProtectControlGroups=yes
+RestrictSUIDSGID=yes
+RestrictRealtime=yes
+RestrictAddressFamilies=AF_UNIX AF_INET AF_INET6
+MemoryMax=256M
+TasksMax=24
+LimitNOFILE=128
+StandardOutput=journal
+StandardError=journal

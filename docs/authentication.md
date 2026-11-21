@@ -378,3 +378,36 @@ Complete the interactive account flow and confirm the shown room and escaped
 message in the controlling terminal. The report's `milestones.write_acknowledged`
 flag records a correlated peer acknowledgment. This uses the historical basic
 WRITE profile and requires owner testing of current server acceptance.
+
+## Executable checks and one-command validation
+
+Build the executable with the live-validation feature. sculk auth check
+reports missing or invalid account identity, client-profile fields, device
+file, key file and fingerprint, allowlist and selected room. An absent device
+file is reported without creating one. Registration, when required, still asks
+for separate approval. A matching fingerprint checks the supplied key bytes
+against the owner-supplied value. Stated profile validation is an operator
+attestation based on live results.
+
+sculk auth preflight accepts the route settings independently of account,
+device and key settings. It checks only the configured DNS/TCP or CONNECT
+routes. The stage report distinguishes an open route from account and LOCO
+milestones.
+
+Run the read-only, receive and single-send checks above before trying a script
+command. Prepare a mode-0600 text file containing the trigger, for example
+!ping followed by one newline. Choose a dedicated authorized test room. Start
+the bot validator, confirm the account and exact room in the terminal, confirm
+script WRITE permission, then wait for live/validation-ready before sending
+the trigger from another authorized test client.
+
+~~~sh
+sculk --config /private/sculk.toml run --live /private/auth.json \
+  --validate-command /private/trigger.txt --report /private/bot-report.json
+~~~
+
+The validator has a 90-second receive window after room verification. It reports
+command dispatch and the correlated acknowledgment separately. It never resumes
+a failed validation by replaying the trigger. Review the peer-visible outcome if
+delivery is unknown. Start continuous operation only after testing the specific
+profile, transport and room. [Ubuntu service setup](ubuntu.md).

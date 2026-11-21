@@ -767,7 +767,7 @@ operation/WRITE/moderation, publication, release or advisory suppression occurre
 Existing RSA advisory assessment and live owner/key/profile/network blockers remain.
 Changes are committed locally; pushing requires separate authorization.
 
-## Sculk executable and authenticated SDK validation
+## Initial executable and authenticated SDK validation
 
 The starting checkout and origin/main both resolved to
 83337e2409e053603ea63df4b862a906d8233228. Changes are on the local work branch.
@@ -844,3 +844,52 @@ local fixtures, including the RSA/AES handshake with the updated RSA library.
 The command example uses a mock adapter in its offline console run. The local
 TLS integration verifies the real SDK's request and acknowledgment path using
 a synthetic grant and peer.
+
+## Live executable, recovery and Ubuntu follow-up
+
+Started from the six-commit work branch at
+33dd3dc208b2de3b7cbc4712616bf5fa14191b42. The follow-up uses the existing
+transport, authentication, bot dispatcher, compiler and checkpoint formats.
+
+| Check | Outcome |
+|---|---|
+| Locked default workspace tests | 137 tests and doctests passed |
+| Locked all-feature workspace tests | 207 tests and doctests passed |
+| Formatting, strict Clippy, warnings-denied rustdoc | Passed |
+| Locked all-feature release build | Passed on x86-64 GNU/Linux, Rust 1.100.0 |
+| Locked fuzz workspace build check | Passed |
+| Root dependency audit | No findings with the recorded RustSec snapshot |
+| Systemd syntax | Passed with the local release path substituted for the installation path |
+| Storage profiling, 2,000 changes | 3.406 s and 8,004 fsync calls per-event versus 0.145 s and 256 calls with opt-in groups of 32 |
+
+The new tests drive the executable's live runner over real loopback TCP and
+certificate-checked local TLS, with fixture GETCONF, CHECKIN, LOGINLIST,
+CHATINFO, MSG and WRITE. They also exercise authenticated reconnection from a
+durable empty-room checkpoint, source-shaped SYNCMSG history, overlapping
+live duplicates, acknowledged echo suppression, rejected or cancelled
+ownership, credential expiry, and ambiguous WRITE on a disconnect or
+handler timeout. An unreported write attempt survives a process restart in
+the separate attempt store, and an older peer watermark blocks dispatch.
+Piped command validation stops at operator authorization. The route-only
+preflight test transmits no login or LOCO data. Storage tests verify that a
+hard stop loses only the pending group and that clean EOF saves the remainder.
+
+No KakaoTalk account operation, Oracle VM service start, AArch64 run or 24-hour
+soak was performed. Exact live blockers are authorized account access, a
+currently accepted source profile, trusted key and route, and compatible
+room watermark, predecessor, history and WRITE acknowledgment evidence.
+The runner requires an owner-authorized start when credentials expire.
+Historical commands are intentionally suppressed during reconciliation.
+[Owner checks](authentication.md) · [Ubuntu setup](ubuntu.md) ·
+[Recovery boundary](recovery.md).
+
+~~~sh
+cargo fmt --all -- --check
+cargo clippy --workspace --all-targets --all-features --locked -- -D warnings
+cargo test --workspace --locked
+cargo test --workspace --all-features --locked
+cargo build --workspace --release --all-features --locked
+RUSTDOCFLAGS="-D warnings" cargo doc --workspace --all-features --no-deps --locked
+cargo check --manifest-path fuzz/Cargo.toml --locked
+TMPDIR=/path/on/target/volume scripts/benchmark-storage.sh target/release/sculk
+~~~

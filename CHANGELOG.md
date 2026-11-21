@@ -2,6 +2,12 @@
 
 ## Unreleased
 
+- Add a Unix executable live path with owner-gated authentication, exact command
+  validation, bounded room recovery and durable write-attempt checkpoints.
+- Add independent DNS/TCP and CONNECT preflight, stage reports, shared device
+  ownership and a manual, private systemd startup on Ubuntu.
+- Add opt-in batching for offline SQLite counter commits and a reproducible
+  transaction/fsync benchmark. Live checkpoint durability uses per-event saves.
 - Add direct TCP and retain explicit HTTP CONNECT routing for approved LOCO
   destinations. Submit historical basic text WRITE through an authenticated
   session with correlated receipts and explicit ambiguous delivery.

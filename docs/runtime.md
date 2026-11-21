@@ -98,14 +98,58 @@ startup Sculk validates the restored file before dispatch. Deleting a counter
 in a script removes it on the next successful state commit. Remove any copies
 from backups according to the retention requirements for that deployment.
 
-## Account-owner validation
+## Account-owner validation and live runtime
 
-Build with --features live-validation to include the existing account
-owner probe. sculk auth login PRIVATE_JSON prompts on a real terminal.
-sculk rooms list PRIVATE_JSON reads one room page and
-sculk rooms info PRIVATE_JSON checks the one configured test room with
-separate approval. The status command does not recover or display credentials.
-A continuous live runtime is unavailable until the profile, transport and
-authorized room behavior can be tested. For the ordered local checks and
-opt-in one-message validation, follow the owner procedure.
-[Authentication and owner validation](authentication.md).
+Build with --features live-validation to include the owner probe and Unix
+live runner. The offline console continues to use its mock adapter.
+
+~~~sh
+sculk auth check /private/auth.json
+sculk auth preflight /private/auth.json
+sculk auth login /private/auth.json --room-info --receive-one 60
+sculk auth login /private/auth.json --send-one 5
+sculk --config sculk.toml run --live /private/auth.json --validate-command /private/trigger.txt --report /private/bot-report.json
+~~~
+
+Each account operation needs interactive authorization. The one-command validator
+reads one exact UTF-8 command from the owner-private trigger file. It waits in
+one selected room and permits a single text attempt for that trigger. Success
+requires an actual command dispatch and a correlated WRITE acknowledgment.
+It uses temporary processing state and leaves the normal live checkpoint alone.
+Use a dedicated test room where other participants cannot accidentally supply the
+trigger. [Owner testing procedure](authentication.md).
+
+For continuous use, record the owner-validated service profile in the private
+authentication JSON and add live settings to sculk.toml.
+
+~~~toml
+[live]
+checkpoint_dir = "/var/lib/sculk/checkpoint"
+enable_write = false
+write_interval_seconds = 2
+
+[limits]
+handler_ms = 7000
+~~~
+
+Start with sculk --config sculk.toml run --live /private/auth.json. The host
+validates scripts and private state before acquiring credentials. Write-enabled
+runs require separate explicit consent. Allow a handler deadline above the
+five-second request timeout if scripts should be able to observe its full outcome.
+Control events and read-only runs use an outbound adapter that explicitly refuses
+text sending. The existing permission registry remains local to the application.
+
+The connector subscribes before reading the selected room's verified watermark.
+On the first start it records the current watermark and starts live processing
+from there. A normal restart or reconnect reconciles the saved checkpoint through
+bounded history. A predecessor mismatch or queue lag suspends dispatch until
+that reconciliation succeeds. Logs received only as history are reviewed read-only
+and never invoked as script commands. The write-attempt checkpoint is committed
+before a live handler can submit a request. An ambiguous or rejected attempt
+stops the run with an explicit outcome. [Recovery](recovery.md).
+
+The optional offline storage setting commit_every defaults to 1. Setting it to
+2 through 256 groups changed snapshots into a full SQLite transaction at each
+boundary and on clean EOF or :quit. A crash can lose the uncommitted group.
+The live host always saves changed counters before recording the associated
+processed checkpoint. [Storage measurements](performance.md).
