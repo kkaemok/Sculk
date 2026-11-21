@@ -480,3 +480,35 @@ Filesystem sync latency depends on the target volume.
 No Oracle instance, AArch64, authenticated KakaoTalk traffic, or 24-hour soak
 was measured in this run. The SDK and console workloads measure different
 parts of the stack.
+
+## SQLite transaction grouping
+
+A release-build trace of the original 2,000-counter workload on the workspace
+overlay volume counted 8,004 fsync calls, 4,014 file opens and 2,001 unlinks.
+The fsync calls accounted for about 70% of the time attributed to traced
+syscalls. That percentage describes the trace's syscall accounting.
+
+The same 2,000-command workload was rerun on the x86-64 workspace volume
+with the new executable. Wall times are from untraced runs and syscall counts
+from separate strace runs.
+
+| Commit boundary | Wall time | fsync calls |
+|---|---:|---:|
+| Every event, the default | 3.406 s | 8,004 |
+| Every 32 events, opt-in | 0.145 s | 256 |
+
+The grouped mode still uses SQLite FULL synchronization per committed
+transaction. It changes when a commit occurs. A hard stop can lose the
+pending group, including the event whose transaction was in progress.
+Clean EOF and :quit commit a partial group. Live execution uses per-event
+counter persistence ahead of its processed checkpoint. The measurements
+do not represent live or AArch64 throughput.
+
+To measure the intended target volume, set TMPDIR to a private directory on
+that volume. On the development host, /tmp was tmpfs and substantially faster.
+
+~~~sh
+cargo build -p sculk --release --features live-validation --locked
+TMPDIR=/path/on/target/volume scripts/benchmark-storage.sh target/release/sculk
+TMPDIR=/path/on/target/volume scripts/benchmark-storage.sh target/release/sculk --trace
+~~~

@@ -234,6 +234,7 @@ impl<'a> Host<'a> {
         let interactive = stdin.is_terminal();
         let mut reader = stdin.lock();
         let mut id = 0_i64;
+        let mut uncommitted = 0;
         let (mut completed, mut commands, mut failures) = (0_u64, 0_u64, 0_u64);
         let mut room = self.config.bot.offline_room;
         let mut bytes = Vec::new();
@@ -311,9 +312,13 @@ impl<'a> Host<'a> {
             commands = commands.saturating_add(report.commands);
             failures = failures.saturating_add(report.failures);
             if let Some(storage) = &mut storage {
-                storage
-                    .save(&counters)
-                    .map_err(|_| "cannot commit script counters")?;
+                uncommitted += 1;
+                if uncommitted == self.config.storage.commit_every {
+                    storage
+                        .save(&counters)
+                        .map_err(|_| "cannot commit script counters")?;
+                    uncommitted = 0;
+                }
             }
             if report.stop != sculk_bot::StopReason::Exhausted || report.shutdown.is_err() {
                 return Err("offline dispatch stopped before drain".into());
@@ -323,6 +328,13 @@ impl<'a> Host<'a> {
                 Some(sculk_bot::Failure::PermissionDenied) => eprintln!("Permission denied."),
                 Some(sculk_bot::Failure::Parse(_)) => eprintln!("Invalid command arguments."),
                 _ => {}
+            }
+        }
+        if uncommitted != 0 {
+            if let Some(storage) = &mut storage {
+                storage
+                    .save(&counters)
+                    .map_err(|_| "cannot commit script counters")?;
             }
         }
         Ok(())

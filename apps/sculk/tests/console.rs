@@ -143,3 +143,45 @@ grant = true
         .unwrap()
         .contains("Permission denied."));
 }
+
+#[test]
+#[cfg(unix)]
+fn opt_in_batches_keep_prior_transactions_and_flush_on_clean_eof() {
+    let directory = tempfile::tempdir().unwrap();
+    let root = directory.path();
+    assert!(command(root).arg("init").status().unwrap().success());
+    let config = root.join("sculk.toml");
+    fs::write(
+        &config,
+        fs::read_to_string(&config)
+            .unwrap()
+            .replace("enabled = false", "enabled = true\ncommit_every = 3"),
+    )
+    .unwrap();
+
+    let mut process = command(root)
+        .args(["run", "--offline"])
+        .stdin(Stdio::piped())
+        .stdout(Stdio::piped())
+        .stderr(Stdio::piped())
+        .spawn()
+        .unwrap();
+    let mut writer = process.stdin.take().unwrap();
+    let mut lines = BufReader::new(process.stdout.take().unwrap()).lines();
+    assert!(lines.next().unwrap().unwrap().contains("offline mode"));
+    for count in 1..=4 {
+        writer.write_all(b"!count\n").unwrap();
+        assert_eq!(
+            lines.next().unwrap().unwrap(),
+            format!("Bot (mock): Counter: {count}")
+        );
+    }
+    process.kill().unwrap();
+    assert!(!process.wait().unwrap().success());
+    let clean = run(root, b"!count\n");
+    assert!(clean.status.success(), "{clean:?}");
+    assert!(String::from_utf8_lossy(&clean.stdout).contains("Counter: 4\n"));
+    let restored = run(root, b"!count\n");
+    assert!(restored.status.success(), "{restored:?}");
+    assert!(String::from_utf8_lossy(&restored.stdout).contains("Counter: 5\n"));
+}

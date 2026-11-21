@@ -63,12 +63,14 @@ impl Default for LimitsSettings {
 pub struct StorageSettings {
     pub enabled: bool,
     pub path: PathBuf,
+    pub commit_every: usize,
 }
 impl Default for StorageSettings {
     fn default() -> Self {
         Self {
             enabled: false,
             path: "data/sculk.db".into(),
+            commit_every: 1,
         }
     }
 }
@@ -115,6 +117,9 @@ impl Configuration {
             || config.rooms.len() > 128
         {
             return Err("configuration limit exceeded".into());
+        }
+        if !(1..=256).contains(&config.storage.commit_every) {
+            return Err("storage.commit_every must be within 1..256".into());
         }
         let default_room = RoomId::new(config.bot.offline_room)?;
         SenderId::new(config.bot.offline_sender)?;
