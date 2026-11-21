@@ -1,5 +1,24 @@
 # Architecture
 
+## Executable and authenticated SDK
+
+The executable depends on the existing client, bot and script layers. It
+discovers a bounded bundle, compiles it once, and installs ordinary handlers
+on the bot. Offline input becomes a typed synthetic MSG, and responses use
+an explicit mock adapter. Reload compiles and validates a new registry then
+swaps it between events. The integer counter store survives the swap. On
+Unix, optional SQLite commits changed counters after dispatch and independently
+of external message delivery.
+
+A trusted Rust host can establish one Session through the client connector,
+select a room through CHATINFO, and hand session ownership to SessionSource.
+The text-only outbound handle shares the session's current state and request
+driver. Every WRITE uses bounded admission and one correlated request,
+independent of which registered handler invoked it. The source owns
+shutdown, and event/handler lifetime remains bounded by the same bot runner.
+Account acquisition stays in the opt-in owner probe. [Runtime](runtime.md) ·
+[Messaging](messaging.md).
+
 ## Phase 11 typed addons
 
 The script compiler accepts an immutable snapshot of validated Rust registrations.

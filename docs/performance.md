@@ -450,3 +450,33 @@ unused native implementations are released with the compiler, and used ones with
 the last program. Native captured state or retained contexts remain application-
 owned. These small samples exclude authenticated sessions and prolonged workloads;
 no target idle-CPU, soak or live compatibility claim follows.
+
+## Executable and function benchmarks
+
+One run of cargo bench --workspace --all-features --locked on x86-64 Linux
+with Rust 1.100.0. The host had three visible logical CPUs and a two-CPU
+cgroup quota. These workloads use synthetic inputs and peers.
+
+| Workload | Sample |
+|---|---:|
+| 308-byte BSON decode including input clone | 190.3 ns/frame |
+| Same frame encode with reusable output | 39.7 ns/frame |
+| AES-GCM 308-byte encrypt including nonce and record encoding | 724.0 ns/record |
+| AES-GCM 308-byte decrypt including input clone | 449.2 ns/record |
+| RSA-2048 OAEP public key setup and entropy | 39.0 µs/handshake |
+| GCM SecureStream through the LOCO actor, 16 workers | 217,925 request/response pairs/s |
+| Native dispatch, capacities 8 / 16 / 32 | 787 / 853 / 914 ns/event |
+| Compiled command calling a typed function and interpolating a quoted argument | 6.24 µs/event |
+| Local TLS authenticated SDK idle, five-second sample | 3,936 KiB RSS; 5.54 ms process CPU |
+| Checked file checkpoint, SHA-256, fsync and rename | 17.7 µs/commit |
+
+The release console processed 2,000 synthetic !count commands with no reported
+failures in both modes. With in-memory counters it took 37 ms wall time and
+used 3,396 KiB idle RSS. With FULL SQLite durability and a changed transaction
+per event it took 3.41 seconds and used 5,132 KiB idle RSS. The SQLite sample
+includes process startup, command dispatch, output capture and state writes.
+Filesystem sync latency depends on the target volume.
+
+No Oracle instance, AArch64, authenticated KakaoTalk traffic, or 24-hour soak
+was measured in this run. The SDK and console workloads measure different
+parts of the stack.

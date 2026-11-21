@@ -766,3 +766,81 @@ replace runtime budgets/timeouts or author cooperation. No live KakaoTalk accoun
 operation/WRITE/moderation, publication, release or advisory suppression occurred.
 Existing RSA advisory assessment and live owner/key/profile/network blockers remain.
 Changes are committed locally; pushing requires separate authorization.
+
+## Sculk executable and authenticated SDK validation
+
+The starting checkout and origin/main both resolved to
+83337e2409e053603ea63df4b862a906d8233228. Changes are on the local work branch.
+The checkpoint data format and explicit v1 migration boundaries are unchanged.
+
+### What the integration covers
+
+- sculk-client adds DirectTcp, Session::send_text, Session::text_sender,
+  Message::quote, Session::room_open_link and Session::open_link_info.
+  Direct TCP checks the same endpoint policy as HTTP CONNECT. Historical basic
+  WRITE requires correlated room-bound evidence and preserves rejection,
+  non-submission and ambiguous delivery. OpenChat link IDs have a distinct type.
+- sculk-bot adds SessionSource, SessionOutbound, room prefix overrides and
+  reusable compiled dispatch for independent finite sources. The session
+  adapter validates the selected room, filters typed messages to it and
+  rate-limits its text attempts. Mock and peer acknowledgment receipts remain
+  distinct.
+- sculk-script adds typed functions, return and void calls, checked arithmetic,
+  else if, repeat and while, bounded scalar collections, shared counters and
+  cancellable handler waits. Functions share the script's existing step,
+  deadline and addon meter. Public Type and Value gain variants for
+  collections. Downstream exhaustive matches can add those cases.
+- apps/sculk adds configuration, installation, compile/list checks, interactive
+  offline dispatch, atomic reload, local permissions and optional private
+  versioned SQLite counters. The owner-validation feature uses the existing
+  authentication implementation and adds a CLI entry point to its probe.
+  [Runtime](runtime.md) · [Scripting](scripting.md).
+- Synthetic tests exercise the shipped starter script through actual local
+  rustls, selected-room CHATINFO, incoming MSG, the existing command parser,
+  compiled execution and correlated WRITE. Separate executable tests cover
+  reload rollback, both script extensions, permissions, and counters after
+  restart, including failure on corruption.
+
+### Live verification and work remaining
+
+No KakaoTalk request was made as part of these checks. Owner tests require a
+legitimately authorized account, accepted device profile, trusted key and
+approved routes. Begin with the local dry run, then verify authentication and
+room access, then receive one controlled message. Confirm the room and message
+separately before the single explicit send. The report records which stages
+succeeded. [Owner procedure](authentication.md).
+
+1. Validate the current profile and secure route, then validate the WRITE receipt
+   contract against the real service. References differ between PC and tablet.
+2. After live validation, integrate lease renewal, recovery and checkpoint
+   handling into a supervised process. Continuous live CLI operation, managed
+   credential persistence, systemd deployment, AArch64 and a 24-hour Oracle
+   Cloud soak remain outstanding.
+3. Verify schemas and room roles for membership and moderation. A native
+   departed-member ban insertion is unsupported. Outbound quotes, mentions,
+   media, reactions, edits and additional live room events still need profile
+   and protocol validation.
+4. Extend the offline command and state surface. Named positional script
+   arguments are currently text, delayed effects run within the active
+   handler, and durable script state is limited to integer counters.
+   [Protocol capability matrix](compatibility.md).
+
+### Verification results
+
+| Check | Result |
+|---|---|
+| Locked default workspace tests | 136 tests and doctests passed |
+| Locked all-feature workspace tests | 198 tests and doctests passed |
+| Formatting, strict Clippy, warnings-denied rustdoc | Passed |
+| Locked all-feature release build and local install | Passed on x86-64 GNU/Linux with Rust 1.100.0. The installed binary initialized a workspace, checked and listed its script, and produced mock replies for ping, a quoted name and a Unicode greeting. |
+| Workspace benchmarks, release console and checkpoint workloads | Passed. [Measurements](performance.md) |
+| Locked fuzz workspace check | Passed |
+| Nightly AddressSanitizer and coverage-guided fuzzing | Decoder 15,000 runs, script parser 5,362 runs, addon parser 103,216 runs. No crashes or sanitizer reports in these samples. |
+| Root and fuzz dependency audits | No findings with cargo-audit 0.23.0 and advisory database 55e1c3dfbd834237a05bbbf7b50ba3b5be27b662. [Dependency review](../SECURITY.md) |
+
+The fuzz campaigns used repository synthetic packet and script seeds. The
+workspace tests include the existing synthetic HTTP-to-LOCO integration and
+local fixtures, including the RSA/AES handshake with the updated RSA library.
+The command example uses a mock adapter in its offline console run. The local
+TLS integration verifies the real SDK's request and acknowledgment path using
+a synthetic grant and peer.

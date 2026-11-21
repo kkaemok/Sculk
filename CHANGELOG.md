@@ -1,5 +1,20 @@
 # Changelog
 
+## Unreleased
+
+- Add direct TCP and retain explicit HTTP CONNECT routing for approved LOCO
+  destinations. Submit historical basic text WRITE through an authenticated
+  session with correlated receipts and explicit ambiguous delivery.
+- Add selected-room bot source and outbound adapters plus an owner-confirmed,
+  one-message validation command. Verify the SDK path with a local TLS peer.
+- Decode quoted-message metadata and add read-only OpenChat link queries.
+- Add typed script functions, checked arithmetic, bounded loops, list and map
+  operations, global counters and cancellable handler waits.
+- Run either script extension from a TOML-configured console with per-room
+  prefixes, permissions, atomic reload and optional private SQLite state.
+- Use patched SQLite, RSA and rustix releases. Preserve checkpoint formats
+  and existing script and addon dispatch. Live compatibility awaits owner tests.
+
 ## Phase 11 — 2026-10-30
 
 - Add a bounded typed Rust syntax registry for expressions, conditions, async
