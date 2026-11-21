@@ -1,6 +1,6 @@
 # Third-party dependencies
 
-Generated from `cargo metadata --all-features --locked` on 2026-10-26.
+Generated from `cargo metadata --all-features --locked` on 2026-11-21.
 
 No upstream SDK implementation source is vendored. References in research.md
 are not linked dependencies. This list includes dev and platform-specific
@@ -54,6 +54,8 @@ crate LICENSE/NOTICE files before publishing. Cargo.lock fixes exact versions.
 | displaydoc | 0.2.7 | MIT OR Apache-2.0 |
 | equivalent | 1.0.3 | Apache-2.0 OR MIT |
 | errno | 0.3.14 | MIT OR Apache-2.0 |
+| fallible-iterator | 0.3.0 | MIT/Apache-2.0 |
+| fallible-streaming-iterator | 0.1.9 | MIT/Apache-2.0 |
 | fastrand | 2.5.0 | Apache-2.0 OR MIT |
 | find-msvc-tools | 0.1.15 | MIT OR Apache-2.0 |
 | fnv | 1.0.7 | Apache-2.0 / MIT |
@@ -71,7 +73,9 @@ crate LICENSE/NOTICE files before publishing. Cargo.lock fixes exact versions.
 | getrandom | 0.3.4 | MIT OR Apache-2.0 |
 | getrandom | 0.4.3 | MIT OR Apache-2.0 |
 | ghash | 0.5.1 | Apache-2.0 OR MIT |
+| hashbrown | 0.16.1 | MIT OR Apache-2.0 |
 | hashbrown | 0.17.1 | MIT OR Apache-2.0 |
+| hashlink | 0.12.2 | MIT OR Apache-2.0 |
 | hex | 0.4.3 | MIT OR Apache-2.0 |
 | http | 1.5.0 | MIT OR Apache-2.0 |
 | http-body | 1.1.0 | MIT |
@@ -97,6 +101,7 @@ crate LICENSE/NOTICE files before publishing. Cargo.lock fixes exact versions.
 | lazy_static | 1.5.1 | MIT OR Apache-2.0 |
 | libc | 0.2.191 | MIT OR Apache-2.0 |
 | libm | 0.2.16 | MIT |
+| libsqlite3-sys | 0.39.1 | MIT |
 | linux-raw-sys | 0.12.1 | Apache-2.0 WITH LLVM-exception OR Apache-2.0 OR MIT |
 | litemap | 0.8.3 | Unicode-3.0 |
 | log | 0.4.34 | MIT OR Apache-2.0 |
@@ -120,6 +125,7 @@ crate LICENSE/NOTICE files before publishing. Cargo.lock fixes exact versions.
 | pin-project-lite | 0.2.17 | Apache-2.0 OR MIT |
 | pkcs1 | 0.7.5 | Apache-2.0 OR MIT |
 | pkcs8 | 0.10.2 | Apache-2.0 OR MIT |
+| pkg-config | 0.3.34 | MIT OR Apache-2.0 |
 | polyval | 0.6.2 | Apache-2.0 OR MIT |
 | potential_utf | 0.1.6 | Unicode-3.0 |
 | powerfmt | 0.2.1 | MIT OR Apache-2.0 |
@@ -151,7 +157,9 @@ crate LICENSE/NOTICE files before publishing. Cargo.lock fixes exact versions.
 | ring | 0.17.14 | Apache-2.0 AND ISC |
 | rpassword | 7.5.4 | Apache-2.0 |
 | rsa | 0.9.10 | MIT OR Apache-2.0 |
+| rsqlite-vfs | 0.1.1 | MIT |
 | rtoolbox | 0.0.6 | Apache-2.0 |
+| rusqlite | 0.41.1 | MIT |
 | rustc-hash | 2.1.3 | Apache-2.0 OR MIT |
 | rusticata-macros | 4.1.0 | MIT/Apache-2.0 |
 | rustix | 1.1.5 | Apache-2.0 WITH LLVM-exception OR Apache-2.0 OR MIT |
@@ -170,6 +178,7 @@ crate LICENSE/NOTICE files before publishing. Cargo.lock fixes exact versions.
 | serde_core | 1.0.229 | MIT OR Apache-2.0 |
 | serde_derive | 1.0.229 | MIT OR Apache-2.0 |
 | serde_json | 1.0.154 | MIT OR Apache-2.0 |
+| serde_spanned | 1.1.3 | MIT OR Apache-2.0 |
 | serde_urlencoded | 0.7.1 | MIT/Apache-2.0 |
 | sha1 | 0.10.7 | MIT OR Apache-2.0 |
 | sha2 | 0.10.9 | MIT OR Apache-2.0 |
@@ -181,7 +190,9 @@ crate LICENSE/NOTICE files before publishing. Cargo.lock fixes exact versions.
 | socket2 | 0.6.5 | MIT OR Apache-2.0 |
 | spin | 0.9.9 | MIT |
 | spki | 0.7.3 | Apache-2.0 OR MIT |
+| sqlite-wasm-rs | 0.5.5 | MIT |
 | stable_deref_trait | 1.2.1 | MIT OR Apache-2.0 |
+| stats_alloc | 0.1.10 | MIT |
 | subtle | 2.6.1 | BSD-3-Clause |
 | syn | 2.0.119 | MIT OR Apache-2.0 |
 | syn | 3.0.9 | MIT OR Apache-2.0 |
@@ -201,9 +212,12 @@ crate LICENSE/NOTICE files before publishing. Cargo.lock fixes exact versions.
 | tokio-macros | 2.7.2 | MIT |
 | tokio-rustls | 0.26.6 | MIT OR Apache-2.0 |
 | tokio-util | 0.7.20 | MIT |
+| toml | 0.9.12+spec-1.1.0 | MIT OR Apache-2.0 |
+| toml_datetime | 0.7.5+spec-1.1.0 | MIT OR Apache-2.0 |
 | toml_datetime | 1.1.2+spec-1.1.0 | MIT OR Apache-2.0 |
 | toml_edit | 0.25.17+spec-1.1.0 | MIT OR Apache-2.0 |
 | toml_parser | 1.1.5+spec-1.1.0 | MIT OR Apache-2.0 |
+| toml_writer | 1.2.0+spec-1.1.0 | MIT OR Apache-2.0 |
 | tower | 0.5.3 | MIT |
 | tower-http | 0.6.11 | MIT |
 | tower-layer | 0.3.3 | MIT |
@@ -219,6 +233,7 @@ crate LICENSE/NOTICE files before publishing. Cargo.lock fixes exact versions.
 | url | 2.5.8 | MIT OR Apache-2.0 |
 | utf8_iter | 1.0.4 | Apache-2.0 OR MIT |
 | uuid | 1.29.0 | Apache-2.0 OR MIT |
+| vcpkg | 0.2.15 | MIT/Apache-2.0 |
 | version_check | 0.9.5 | MIT/Apache-2.0 |
 | wait-timeout | 0.2.1 | MIT/Apache-2.0 |
 | want | 0.3.2 | MIT |
@@ -244,6 +259,7 @@ crate LICENSE/NOTICE files before publishing. Cargo.lock fixes exact versions.
 | windows_x86_64_gnu | 0.52.6 | MIT OR Apache-2.0 |
 | windows_x86_64_gnullvm | 0.52.6 | MIT OR Apache-2.0 |
 | windows_x86_64_msvc | 0.52.6 | MIT OR Apache-2.0 |
+| winnow | 0.7.15 | MIT |
 | winnow | 1.0.4 | MIT |
 | wit-bindgen | 0.57.1 | Apache-2.0 WITH LLVM-exception OR Apache-2.0 OR MIT |
 | writeable | 0.6.4 | Unicode-3.0 |
@@ -263,3 +279,6 @@ crate LICENSE/NOTICE files before publishing. Cargo.lock fixes exact versions.
 | zmij | 1.0.23 | MIT |
 
 See THIRD_PARTY_NOTICES.md for reference public-key/source-fixture attribution.
+
+The Unix host bundles the public-domain SQLite core through rusqlite and
+libsqlite3-sys. These dependencies are for counter persistence.

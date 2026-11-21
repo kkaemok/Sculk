@@ -15,6 +15,13 @@ jobs:
       - run: cargo test --workspace --locked
       - run: cargo test --workspace --all-features --locked
       - run: cargo build --workspace --release --all-features --locked
+      - name: Run the offline console
+        shell: bash
+        run: |
+          project="$(mktemp -d)"
+          cargo run -p sculk --locked -- --config "$project/sculk.toml" init
+          cargo run -p sculk --locked -- --config "$project/sculk.toml" script check
+          printf '!ping\n:quit\n' | cargo run -p sculk --locked -- --config "$project/sculk.toml" run --offline
       - run: cargo run -p sculk-basic-client --locked
       - run: cargo run -p sculk-basic-bot --locked
       - run: cargo run -p sculk-script-bot --locked

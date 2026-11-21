@@ -1,0 +1,27 @@
+options:
+    prefixes: "!", "/"
+
+function greeting(name: text) -> text:
+    return "Hello, %name%!"
+
+command ping:
+    trigger:
+        reply "Pong!"
+
+command help:
+    aliases: h, 도움말
+    trigger:
+        reply "Available commands: ping, help, greet, count"
+
+command greet <name>:
+    trigger:
+        reply greeting(arg-1)
+
+command count:
+    trigger:
+        add 1 to {global::messages}
+        reply "Counter: %{global::messages}%"
+
+on message:
+    if message is "안녕":
+        reply "안녕하세요!"

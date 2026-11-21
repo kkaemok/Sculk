@@ -62,12 +62,10 @@ can use a caller-supplied legitimate identity via from_uuid instead.
    profile and trusted current LOCO public key through legitimate means. A REST
    bearer token is not assumed to be LOCO-capable. Do not guess another account's
    ID, bypass phone verification or disable endpoint identity checks.
-2. Configure approved HTTPS access to katalk.kakao.com and the required raw TCP
-   proxy grants for Booking/selected Checkin/assigned chat endpoints. The example
-   uses an explicit HTTP CONNECT proxy for every LOCO connection and exact endpoint
-   allowlist; there is no direct fallback. The managed startup snapshot here lists
-   no custom Kakao destinations or TCP grants. No denial is claimed from an unrun
-   request: verify current policy and approved routes before testing.
+2. Configure approved HTTPS access to katalk.kakao.com and TCP access to
+   Booking, selected Checkin and assigned chat endpoints. Select direct TCP
+   or HTTP CONNECT explicitly. Both validate the exact endpoint allowlist.
+   Verify the machine's DNS, egress policy and authorized routes before testing.
 3. Create a private directory (`mkdir -m 700 ~/.config/sculk`), store the trusted
    PKCS#1 RSA-2048 public DER key there with mode 600, and create a mode-600 JSON
    configuration. Replace **all** owner/profile/path/endpoint placeholders below:

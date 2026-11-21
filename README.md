@@ -1,38 +1,29 @@
 # Sculk
 
-An independent Rust foundation for an unofficial KakaoTalk SDK, licensed
-**MIT OR Apache-2.0**. This is an early protocol/transport implementation, not a
-working authenticated KakaoTalk client. Current direct-login compatibility is
-unverified; see [compatibility](docs/compatibility.md) and [research](docs/research.md).
+Sculk is an independent Rust SDK and bot runtime for KakaoTalk experimentation,
+licensed **MIT OR Apache-2.0**. The bot framework and compiled scripts run
+offline without an account. The native SDK implements an experimental
+authenticated LOCO path and text dispatch, tested against local protocol peers.
+Current KakaoTalk service compatibility awaits account-owner validation.
+[Compatibility](docs/compatibility.md) · [Protocol research](docs/research.md)
 
-Implemented: bounded incremental historical LOCO framing, validated BSON, an
-async request driver, correlation, deadlines, cancellation, explicit queue
-limits, raw diagnostic events, clean shutdown, and finite connector retries. Optional
-`messaging` adds typed incoming MSG events and an offline text-WRITE foundation.
-An optional experimental AES-GCM record codec has offline cryptographic tests.
+~~~sh
+cargo install --path apps/sculk --locked
+sculk init
+sculk script check
+sculk run --offline
+~~~
 
-`sculk-bot` adds bounded async events, startup commands/aliases, quoted arguments,
-application permissions and cancellation above `sculk-client`:
+Type !ping, /help, or 안녕 to try the starter commands and message handler.
+Use :reload in the console to swap in a validated script bundle.
+[Runtime and configuration](docs/runtime.md) · [Oracle Ubuntu](docs/ubuntu.md)
 
-```sh
-cargo run -p sculk-basic-bot --locked
-```
-
-This offline example demonstrates `!ping`, `!help` and explicit mock replies.
-See the [public bot API and future script boundary](docs/bot.md). Live WRITE stays
-unverified; no live sender or automatic authentication is added.
-
-`sculk-script` adds an indentation-based language with events, commands, typed
-conditions, event-local variables, interpolation and bounded asynchronous effects.
-`.sculk` and `.sc` use the same compiler/runtime. Commands reuse the bot's prefix
-trie and argument/permission system, including `/`, `!`, `?`, `.`, `>>` and Unicode
-string prefixes. Try the credential-free script example:
-
-```sh
-cargo run -p sculk-script-bot --locked
-```
-
-See the [scripting tutorial, syntax and runtime restrictions](docs/scripting.md).
+sculk-bot provides bounded FIFO dispatch, aliases, quoted arguments, Unicode
+prefixes, room overrides and application permissions. sculk-script adds a
+compiled language with typed functions, checked arithmetic, bounded loops,
+collections, cancellable effects and integer counters. Both .sculk and .sc
+use the same compiler. The offline runtime can persist counters in SQLite.
+[Bot SDK](docs/bot.md) · [Scripting](docs/scripting.md)
 
 Statically linked Rust addons can register typed expressions, conditions, async
 effects and aliases/filters over existing bot events. Syntax resolves at compile
@@ -73,16 +64,6 @@ owner-controlled live validation; it remains live-unverified.
 
 [Verification](docs/verification.md) · [Architecture](docs/architecture.md) · [Performance](docs/performance.md) ·
 [Contributing](CONTRIBUTING.md) · [Security](SECURITY.md) · [Changelog](CHANGELOG.md)
-
-In this managed cloud environment, activate the installed tools with:
-
-```sh
-export CARGO_HOME=/workspace/.cargo RUSTUP_HOME=/workspace/.rustup
-export PATH="$CARGO_HOME/bin:$PATH"
-cd /workspace/Sculk
-```
-
-`scripts/cloud-install.sh` reproduces cloud tool installation and offline checks.
 
 ## Optional secure-session infrastructure
 
@@ -175,9 +156,11 @@ Feed content remains opaque; no join/kick action is inferred from feedType.
 
 `TextRequest` encodes one source-profile text WRITE and classifies a caller-submitted
 response as acknowledgment, rejection, timeout with unknown delivery, or other
-unknown delivery. Encoding sends nothing. There is no high-level live text sender
-or CLI send option in this milestone. Never automatically resend an ambiguous
-request; a server acknowledgment does not prove recipient delivery.
+unknown delivery. Session::send_text and SessionSource::text_outbound
+submit the historical basic WRITE profile through the active session.
+The owner CLI also supports a separately confirmed --send-one operation.
+Reconcile ambiguous outcomes before any further attempt.
+[Messaging and verification](docs/messaging.md).
 
 ```sh
 cargo test -p sculk-client --all-features --test messaging --locked

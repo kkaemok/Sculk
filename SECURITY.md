@@ -213,3 +213,23 @@ reception and local close remain independent. Ctrl-C/close errors cannot become
 shutdown success. Selected-room metadata and message content/IDs are not logged.
 Configuration bytes are zeroized earlier after decoding. Existing limitations on
 complete erasure of serialized/TLS/library buffer copies remain in force.
+
+## Runtime and dependency review
+
+The console compiles bounded source files from an explicit operator-selected
+directory. Reload builds and validates a complete command registry before
+replacing the active one. Script functions, loops, delays and addon effects
+share the invoking handler's deadlines and step budget. SQLite writes occur
+outside dispatch, use a versioned, checked schema and transactions, and
+require owner-private files and a directory. The SQLite lock releases when
+the process exits. A state commit after synthetic dispatch records local
+counter changes. The state database has no authentication or message-delivery
+commit semantics.
+
+The bundled SQLite was pinned to libsqlite3-sys 0.39.1 to use the upstream
+fix for RUSTSEC-2026-0459. The existing RSA handshake still imports a public
+key and performs OAEP public-key encryption. RSA private-key operations in
+the repository appear in synthetic tests. RUSTSEC-2023-0071 remains relevant
+to the dependency and is left visible to audit tools.
+[RustSec SQLite advisory](https://rustsec.org/advisories/RUSTSEC-2026-0459.html) ·
+[RustSec RSA advisory](https://rustsec.org/advisories/RUSTSEC-2023-0071.html).
