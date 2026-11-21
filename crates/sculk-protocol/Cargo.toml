@@ -34,11 +34,11 @@ version = "0.8"
 optional = true
 
 [dependencies.rsa]
-version = "0.9"
+version = "0.10"
 optional = true
 
 [dependencies.sha1]
-version = "0.10"
+version = "0.11"
 optional = true
 
 [dependencies.zeroize]

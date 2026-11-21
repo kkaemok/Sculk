@@ -226,10 +226,17 @@ the process exits. A state commit after synthetic dispatch records local
 counter changes. The state database has no authentication or message-delivery
 commit semantics.
 
-The bundled SQLite was pinned to libsqlite3-sys 0.39.1 to use the upstream
-fix for RUSTSEC-2026-0459. The existing RSA handshake still imports a public
-key and performs OAEP public-key encryption. RSA private-key operations in
-the repository appear in synthetic tests. RUSTSEC-2023-0071 remains relevant
-to the dependency and is left visible to audit tools.
-[RustSec SQLite advisory](https://rustsec.org/advisories/RUSTSEC-2026-0459.html) ·
-[RustSec RSA advisory](https://rustsec.org/advisories/RUSTSEC-2023-0071.html).
+The final dependency review uses cargo-audit 0.23.0 and RustSec advisory
+database revision 55e1c3dfbd834237a05bbbf7b50ba3b5be27b662. The root and
+fuzz lockfile audits reported no findings at this revision. The resolved
+versions include the upstream fixes in libsqlite3-sys 0.39.1, rustix 1.1.6
+and rsa 0.10.0. No advisory filters were added.
+
+The original rsa 0.9.10 dependency was affected by RUSTSEC-2023-0071.
+Its private-key operation was absent from the runtime call path. The upgraded
+handshake still imports a caller-trusted public key, requires a 2048-bit
+modulus, and uses RSA-OAEP with the source-profile SHA-1/MGF1 parameters
+and OS entropy. Private-key operations remain confined to synthetic peers.
+[SQLite](https://rustsec.org/advisories/RUSTSEC-2026-0459.html) ·
+[rustix](https://rustsec.org/advisories/RUSTSEC-2026-0486.html) ·
+[RSA](https://rustsec.org/advisories/RUSTSEC-2023-0071.html).

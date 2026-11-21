@@ -19,6 +19,7 @@ crate LICENSE/NOTICE files before publishing. Cargo.lock fixes exact versions.
 | asn1-rs-impl | 0.2.0 | MIT/Apache-2.0 |
 | atomic-waker | 1.1.2 | Apache-2.0 OR MIT |
 | autocfg | 1.5.1 | Apache-2.0 OR MIT |
+| base16ct | 1.0.0 | Apache-2.0 OR MIT |
 | base64 | 0.22.1 | MIT OR Apache-2.0 |
 | base64 | 0.23.1 | MIT OR Apache-2.0 |
 | base64ct | 1.8.3 | Apache-2.0 OR MIT |
@@ -28,6 +29,7 @@ crate LICENSE/NOTICE files before publishing. Cargo.lock fixes exact versions.
 | bitflags | 2.13.2 | MIT OR Apache-2.0 |
 | bitvec | 1.1.1 | MIT |
 | block-buffer | 0.10.4 | MIT OR Apache-2.0 |
+| block-buffer | 0.12.1 | MIT OR Apache-2.0 |
 | borsh | 1.8.1 | MIT OR Apache-2.0 |
 | borsh-derive | 1.8.1 | Apache-2.0 |
 | bson | 2.15.0 | MIT |
@@ -38,19 +40,26 @@ crate LICENSE/NOTICE files before publishing. Cargo.lock fixes exact versions.
 | cfg_aliases | 0.2.2 | MIT |
 | chacha20 | 0.10.2 | MIT OR Apache-2.0 |
 | cipher | 0.4.4 | MIT OR Apache-2.0 |
-| const-oid | 0.9.6 | Apache-2.0 OR MIT |
+| cmov | 0.5.4 | Apache-2.0 OR MIT |
+| const-oid | 0.10.3 | Apache-2.0 OR MIT |
 | core-foundation | 0.10.1 | MIT OR Apache-2.0 |
 | core-foundation-sys | 0.8.7 | MIT OR Apache-2.0 |
 | core_detect | 1.0.0 | MIT/Apache-2.0 |
+| cpubits | 0.1.1 | MIT OR Apache-2.0 |
 | cpufeatures | 0.2.17 | MIT OR Apache-2.0 |
 | cpufeatures | 0.3.1 | MIT OR Apache-2.0 |
+| crypto-bigint | 0.7.11 | Apache-2.0 OR MIT |
 | crypto-common | 0.1.7 | MIT OR Apache-2.0 |
+| crypto-common | 0.2.2 | MIT OR Apache-2.0 |
+| crypto-primes | 0.7.2 | Apache-2.0 OR MIT |
 | ctr | 0.9.2 | MIT OR Apache-2.0 |
+| ctutils | 0.4.8 | Apache-2.0 OR MIT |
 | data-encoding | 2.11.1 | MIT |
-| der | 0.7.10 | Apache-2.0 OR MIT |
+| der | 0.8.3 | Apache-2.0 OR MIT |
 | der-parser | 10.0.0 | MIT OR Apache-2.0 |
 | deranged | 0.5.9 | MIT OR Apache-2.0 |
 | digest | 0.10.7 | MIT OR Apache-2.0 |
+| digest | 0.11.3 | MIT OR Apache-2.0 |
 | displaydoc | 0.2.7 | MIT OR Apache-2.0 |
 | equivalent | 1.0.3 | Apache-2.0 OR MIT |
 | errno | 0.3.14 | MIT OR Apache-2.0 |
@@ -77,10 +86,12 @@ crate LICENSE/NOTICE files before publishing. Cargo.lock fixes exact versions.
 | hashbrown | 0.17.1 | MIT OR Apache-2.0 |
 | hashlink | 0.12.2 | MIT OR Apache-2.0 |
 | hex | 0.4.3 | MIT OR Apache-2.0 |
+| hmac | 0.13.0 | MIT OR Apache-2.0 |
 | http | 1.5.0 | MIT OR Apache-2.0 |
 | http-body | 1.1.0 | MIT |
 | http-body-util | 0.1.5 | MIT |
 | httparse | 1.10.1 | MIT OR Apache-2.0 |
+| hybrid-array | 0.4.15 | MIT OR Apache-2.0 |
 | hyper | 1.12.0 | MIT |
 | hyper-rustls | 0.27.10 | Apache-2.0 OR ISC OR MIT |
 | hyper-util | 0.1.21 | MIT |
@@ -100,7 +111,6 @@ crate LICENSE/NOTICE files before publishing. Cargo.lock fixes exact versions.
 | js-sys | 0.3.106 | MIT OR Apache-2.0 |
 | lazy_static | 1.5.1 | MIT OR Apache-2.0 |
 | libc | 0.2.191 | MIT OR Apache-2.0 |
-| libm | 0.2.16 | MIT |
 | libsqlite3-sys | 0.39.1 | MIT |
 | linux-raw-sys | 0.12.1 | Apache-2.0 WITH LLVM-exception OR Apache-2.0 OR MIT |
 | litemap | 0.8.3 | Unicode-3.0 |
@@ -111,20 +121,18 @@ crate LICENSE/NOTICE files before publishing. Cargo.lock fixes exact versions.
 | mio | 1.2.4 | MIT |
 | nom | 7.1.3 | MIT |
 | num-bigint | 0.4.8 | MIT OR Apache-2.0 |
-| num-bigint-dig | 0.8.6 | MIT/Apache-2.0 |
 | num-conv | 0.2.2 | MIT OR Apache-2.0 |
 | num-integer | 0.1.47 | MIT OR Apache-2.0 |
-| num-iter | 0.1.46 | MIT OR Apache-2.0 |
 | num-traits | 0.2.19 | MIT OR Apache-2.0 |
 | oid-registry | 0.8.1 | MIT OR Apache-2.0 |
 | once_cell | 1.21.4 | MIT OR Apache-2.0 |
 | opaque-debug | 0.3.1 | MIT OR Apache-2.0 |
 | openssl-probe | 0.2.1 | MIT OR Apache-2.0 |
-| pem-rfc7468 | 0.7.0 | Apache-2.0 OR MIT |
+| pem-rfc7468 | 1.0.0 | Apache-2.0 OR MIT |
 | percent-encoding | 2.3.2 | MIT OR Apache-2.0 |
 | pin-project-lite | 0.2.17 | Apache-2.0 OR MIT |
-| pkcs1 | 0.7.5 | Apache-2.0 OR MIT |
-| pkcs8 | 0.10.2 | Apache-2.0 OR MIT |
+| pkcs1 | 0.8.0 | Apache-2.0 OR MIT |
+| pkcs8 | 0.11.0 | Apache-2.0 OR MIT |
 | pkg-config | 0.3.34 | MIT OR Apache-2.0 |
 | polyval | 0.6.2 | Apache-2.0 OR MIT |
 | potential_utf | 0.1.6 | Unicode-3.0 |
@@ -156,13 +164,13 @@ crate LICENSE/NOTICE files before publishing. Cargo.lock fixes exact versions.
 | reqwest | 0.12.28 | MIT OR Apache-2.0 |
 | ring | 0.17.14 | Apache-2.0 AND ISC |
 | rpassword | 7.5.4 | Apache-2.0 |
-| rsa | 0.9.10 | MIT OR Apache-2.0 |
+| rsa | 0.10.0 | MIT OR Apache-2.0 |
 | rsqlite-vfs | 0.1.1 | MIT |
 | rtoolbox | 0.0.6 | Apache-2.0 |
 | rusqlite | 0.41.1 | MIT |
 | rustc-hash | 2.1.3 | Apache-2.0 OR MIT |
 | rusticata-macros | 4.1.0 | MIT/Apache-2.0 |
-| rustix | 1.1.5 | Apache-2.0 WITH LLVM-exception OR Apache-2.0 OR MIT |
+| rustix | 1.1.6 | Apache-2.0 WITH LLVM-exception OR Apache-2.0 OR MIT |
 | rustls | 0.23.46 | Apache-2.0 OR ISC OR MIT |
 | rustls-native-certs | 0.8.5 | Apache-2.0 OR ISC OR MIT |
 | rustls-pki-types | 1.15.1 | MIT OR Apache-2.0 |
@@ -180,16 +188,17 @@ crate LICENSE/NOTICE files before publishing. Cargo.lock fixes exact versions.
 | serde_json | 1.0.154 | MIT OR Apache-2.0 |
 | serde_spanned | 1.1.3 | MIT OR Apache-2.0 |
 | serde_urlencoded | 0.7.1 | MIT/Apache-2.0 |
-| sha1 | 0.10.7 | MIT OR Apache-2.0 |
+| serdect | 0.4.3 | Apache-2.0 OR MIT |
+| sha1 | 0.11.0 | MIT OR Apache-2.0 |
 | sha2 | 0.10.9 | MIT OR Apache-2.0 |
+| sha2 | 0.11.1 | MIT OR Apache-2.0 |
 | shlex | 2.0.1 | MIT OR Apache-2.0 |
 | signal-hook-registry | 1.4.8 | MIT OR Apache-2.0 |
-| signature | 2.2.0 | Apache-2.0 OR MIT |
+| signature | 3.0.0 | Apache-2.0 OR MIT |
 | slab | 0.4.12 | MIT |
 | smallvec | 1.16.4 | MIT OR Apache-2.0 |
 | socket2 | 0.6.5 | MIT OR Apache-2.0 |
-| spin | 0.9.9 | MIT |
-| spki | 0.7.3 | Apache-2.0 OR MIT |
+| spki | 0.8.1 | Apache-2.0 OR MIT |
 | sqlite-wasm-rs | 0.5.5 | MIT |
 | stable_deref_trait | 1.2.1 | MIT OR Apache-2.0 |
 | stats_alloc | 0.1.10 | MIT |

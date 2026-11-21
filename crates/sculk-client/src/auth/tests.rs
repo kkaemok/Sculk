@@ -430,7 +430,7 @@ async fn http_provider_to_tls_booking_gcm_checkin_and_login_exact_account() {
         Config,
     };
     use futures_util::{SinkExt, StreamExt};
-    use rsa::{pkcs1::EncodeRsaPublicKey, pkcs8::DecodePrivateKey, Oaep};
+    use rsa::{pkcs1::EncodeRsaPublicKey, pkcs8::DecodePrivateKey};
     use sculk_protocol::{handshake::ServerKey, secure::GcmRecords, Command, LocoCodec, Packet};
     use std::sync::Arc;
     use tokio_util::codec::Framed;
@@ -448,7 +448,7 @@ async fn http_provider_to_tls_booking_gcm_checkin_and_login_exact_account() {
         .unwrap();
     http.await.unwrap();
     let private = Arc::new(
-        rsa::RsaPrivateKey::from_pkcs8_pem(include_str!(
+        rsa::PrivateKey::from_pkcs8_pem(include_str!(
             "../../../../tests/fixtures/synthetic-rsa-private.pem"
         ))
         .unwrap(),
@@ -497,9 +497,7 @@ async fn http_provider_to_tls_booking_gcm_checkin_and_login_exact_account() {
             let mut h = [0; 268];
             socket.read_exact(&mut h).await.unwrap();
             assert_eq!(&h[..12], &[0, 1, 0, 0, 16, 0, 0, 0, 3, 0, 0, 0]);
-            let key = private
-                .decrypt(Oaep::new::<sha1::Sha1>(), &h[12..])
-                .unwrap();
+            let key = private.oaep_decrypt::<sha1::Sha1>(&h[12..]).unwrap();
             let stream = SecureStream::from_codec(
                 socket,
                 GcmRecords::new(key.as_slice().try_into().unwrap()),

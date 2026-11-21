@@ -3,7 +3,7 @@ mod support;
 use bson::doc;
 use bytes::BytesMut;
 use futures_util::{SinkExt, StreamExt};
-use rsa::{pkcs1::EncodeRsaPublicKey, pkcs8::DecodePrivateKey, Oaep, RsaPrivateKey};
+use rsa::{pkcs1::EncodeRsaPublicKey, pkcs8::DecodePrivateKey, PrivateKey};
 use sculk_client::{
     connect::{self, Booking, BookingSchema, DeviceProfile, Endpoint, Options, Protection, Stage},
     records::SecureStream,
@@ -23,11 +23,11 @@ use tokio::{
 };
 use tokio_util::codec::{Decoder, Encoder, Framed};
 
-fn private() -> Arc<RsaPrivateKey> {
-    static KEY: OnceLock<Arc<RsaPrivateKey>> = OnceLock::new();
+fn private() -> Arc<PrivateKey> {
+    static KEY: OnceLock<Arc<PrivateKey>> = OnceLock::new();
     KEY.get_or_init(|| {
         Arc::new(
-            RsaPrivateKey::from_pkcs8_pem(include_str!(
+            PrivateKey::from_pkcs8_pem(include_str!(
                 "../../../tests/fixtures/synthetic-rsa-private.pem"
             ))
             .unwrap(),
@@ -77,9 +77,7 @@ async fn server_secure(mut stream: DuplexStream) -> SecureStream<DuplexStream> {
     let mut wire = [0; 268];
     stream.read_exact(&mut wire).await.unwrap();
     assert_eq!(&wire[..12], &[0, 1, 0, 0, 16, 0, 0, 0, 3, 0, 0, 0]);
-    let aes = private()
-        .decrypt(Oaep::new::<sha1::Sha1>(), &wire[12..])
-        .unwrap();
+    let aes = private().oaep_decrypt::<sha1::Sha1>(&wire[12..]).unwrap();
     assert_eq!(aes.len(), 16);
     SecureStream::from_codec(stream, GcmRecords::new(aes.as_slice().try_into().unwrap()))
 }

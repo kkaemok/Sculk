@@ -3,13 +3,13 @@
 //! this handshake is not server confirmation; a valid GCM response is required.
 use crate::{secure::GcmRecords, Error};
 use rand::{rngs::OsRng, RngCore};
-use rsa::{pkcs1::DecodeRsaPublicKey, traits::PublicKeyParts, Oaep, RsaPublicKey};
+use rsa::{pkcs1::DecodeRsaPublicKey, traits::PublicKeyParts, PublicKey};
 use sha1::Sha1;
 use zeroize::Zeroizing;
 
 /// Caller-trusted RSA-2048 public key, never discovered from an untrusted peer.
 #[derive(Clone)]
-pub struct ServerKey(RsaPublicKey);
+pub struct ServerKey(PublicKey);
 impl ServerKey {
     /// Import bounded PKCS#1 DER. The documented exchange requires 2048 bits.
     /// This validates structure/size, not the key's identity or provenance.
@@ -17,8 +17,8 @@ impl ServerKey {
         if der.len() > 4096 {
             return Err(Error::Crypto);
         }
-        let key = RsaPublicKey::from_pkcs1_der(der).map_err(|_| Error::Crypto)?;
-        if key.n().bits() != 2048 {
+        let key = PublicKey::from_pkcs1_der(der).map_err(|_| Error::Crypto)?;
+        if key.n().bit_width() != 2048 {
             return Err(Error::Crypto);
         }
         Ok(Self(key))
@@ -33,7 +33,7 @@ impl ServerKey {
             .map_err(|_| Error::Crypto)?;
         let encrypted = self
             .0
-            .encrypt(&mut OsRng, Oaep::new::<Sha1>(), key.as_ref())
+            .oaep_encrypt::<Sha1>(key.as_ref())
             .map_err(|_| Error::Crypto)?;
         let mut wire = [0u8; 268];
         wire[..4].copy_from_slice(&256u32.to_le_bytes());
