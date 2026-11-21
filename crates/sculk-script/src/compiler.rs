@@ -1,7 +1,8 @@
 use crate::addon::{Capability, Entry, Registry, SyntaxId};
+use crate::collections::Builtin;
 use crate::{
-    ast::{self, Declaration, ExprKind, StatementKind, Type, Value},
-    lexer, parser, Category, Diagnostic, Diagnostics, Limits, Source, Span,
+    ast::{self, Binary, Declaration, ExprKind, StatementKind, Type, Value},
+    lexer, parser, Category, Diagnostic, Diagnostics, GlobalCounters, Limits, Source, Span,
 };
 use sculk_bot::{Bot, Command, EventKind, PermissionId, RegistrationError};
 use std::{
@@ -19,8 +20,16 @@ pub(crate) enum Expression {
     Room,
     Argument(usize),
     Local(usize),
+    Global(Arc<str>),
+    MessageId,
+    MessageType,
+    SentAt,
     Template(Vec<Expression>),
     Equal(Box<Expression>, Box<Expression>, bool),
+    Binary(Binary, Box<Expression>, Box<Expression>),
+    Not(Box<Expression>),
+    Call(usize, Vec<Expression>),
+    Builtin(Builtin, Vec<Expression>),
     And(Box<Expression>, Box<Expression>),
     Or(Box<Expression>, Box<Expression>),
     Addon(Arc<Entry>, Vec<Expression>),
@@ -28,9 +37,16 @@ pub(crate) enum Expression {
 pub(crate) enum Operation {
     Reply(Expression),
     Set(usize, Expression),
+    UpdateGlobal(Arc<str>, Expression, bool),
+    DeleteGlobal(Arc<str>),
+    Wait(Expression),
     FalseJump(Expression, usize),
     Jump(usize),
     Stop,
+    Return(Option<Expression>),
+    Call(usize, Vec<Expression>),
+    Repeat(Expression, usize, usize),
+    RepeatNext(usize, usize),
     Addon(Arc<Entry>, Vec<Expression>),
 }
 pub(crate) struct Instruction {
@@ -52,9 +68,22 @@ pub(crate) struct Handler {
     pub code: Vec<Instruction>,
     pub event_addon: Option<Arc<Entry>>,
     pub locals: usize,
+    pub repeat_slots: usize,
+}
+pub(crate) struct Function {
+    pub code: Vec<Instruction>,
+    pub locals: usize,
+    pub repeat_slots: usize,
+}
+struct Signature {
+    index: usize,
+    parameters: Vec<Type>,
+    result: Option<Type>,
 }
 pub(crate) struct Program {
     pub handlers: Vec<Handler>,
+    pub functions: Vec<Function>,
+    pub globals: Arc<GlobalCounters>,
     pub limits: Limits,
     pub case_sensitive: bool,
     pub units: usize,
@@ -155,6 +184,7 @@ pub struct Compiler {
     case_sensitive: bool,
     defaults: Vec<String>,
     registry: Arc<Registry>,
+    globals: Option<Arc<GlobalCounters>>,
     capabilities: Vec<Capability>,
 }
 impl Default for Compiler {
@@ -169,6 +199,7 @@ impl Compiler {
             case_sensitive: true,
             defaults: vec!["!".into()],
             registry: Arc::new(Registry::new()),
+            globals: None,
             capabilities: Vec::new(),
         }
     }
@@ -176,6 +207,12 @@ impl Compiler {
     /// implementations directly; no registry lookup occurs during execution.
     pub fn with_registry(mut self, registry: Registry) -> Self {
         self.registry = Arc::new(registry);
+        self
+    }
+    /// Share counters across independently compiled bundles, including during
+    /// validated reload. A fresh compilation otherwise has empty counters.
+    pub fn with_globals(mut self, counters: Arc<GlobalCounters>) -> Self {
+        self.globals = Some(counters);
         self
     }
     /// Explicit host grants, separate from command permissions. Facility access
@@ -282,6 +319,7 @@ impl Compiler {
             )]);
         }
         let mut handlers = Vec::new();
+        let mut functions = Vec::new();
         let mut errors = Vec::new();
         let mut units = 0;
         let mut conflicts = HashSet::new();
@@ -330,8 +368,100 @@ impl Compiler {
             let script = parser::parse(&lines, &mut d, &self.registry);
             let defaults = script.prefixes.as_ref().unwrap_or(&self.defaults);
             validate_prefixes(defaults, span, &mut d);
+            let mut signatures = HashMap::new();
+            let mut index = functions.len();
+            for declaration in &script.declarations {
+                if let Declaration::Function {
+                    name,
+                    parameters,
+                    result,
+                    span,
+                    ..
+                } = declaration
+                {
+                    if index >= 128 {
+                        d.push(
+                            *span,
+                            Category::Limit,
+                            "function declaration limit exceeded",
+                        );
+                        break;
+                    }
+                    if Builtin::named(name).is_some()
+                        || !sculk_bot::valid_command_name(name)
+                        || signatures
+                            .insert(
+                                name.clone(),
+                                Signature {
+                                    index,
+                                    parameters: parameters.iter().map(|(_, ty)| *ty).collect(),
+                                    result: *result,
+                                },
+                            )
+                            .is_some()
+                    {
+                        d.push(
+                            *span,
+                            Category::Scope,
+                            "invalid or duplicate file-local function name",
+                        );
+                    }
+                    index += 1;
+                }
+            }
             for declaration in script.declarations {
                 let (kind, body, span, spec, event_addon) = match declaration {
+                    Declaration::Function {
+                        parameters,
+                        result,
+                        body,
+                        span,
+                        ..
+                    } => {
+                        if functions.len() >= 128 {
+                            break;
+                        }
+                        let mut semantic = Semantic {
+                            d: &mut d,
+                            bindings: HashMap::new(),
+                            locals: parameters.len(),
+                            repeat_slots: 0,
+                            code: Vec::new(),
+                            kind: EventKind::All,
+                            arguments: None,
+                            functions: &signatures,
+                            return_type: Some(result),
+                            units: &mut units,
+                            registry: &self.registry,
+                            capabilities: &self.capabilities,
+                        };
+                        for (slot, (name, ty)) in parameters.into_iter().enumerate() {
+                            if !sculk_bot::valid_command_name(&name)
+                                || semantic.bindings.insert(name, (slot, ty)).is_some()
+                            {
+                                semantic.d.push(
+                                    span,
+                                    Category::Scope,
+                                    "invalid or duplicate function parameter",
+                                );
+                            }
+                        }
+                        if result.is_some() && !guarantees_return(&body) {
+                            semantic.d.push(
+                                span,
+                                Category::Type,
+                                "function must return a value on every path",
+                            );
+                        }
+                        semantic.charge(span);
+                        semantic.block(&body, 1);
+                        functions.push(Function {
+                            code: semantic.code,
+                            locals: semantic.locals,
+                            repeat_slots: semantic.repeat_slots,
+                        });
+                        continue;
+                    }
                     Declaration::Event {
                         kind,
                         body,
@@ -427,8 +557,11 @@ impl Compiler {
                     d: &mut d,
                     bindings: HashMap::new(),
                     locals: 0,
+                    repeat_slots: 0,
                     code: Vec::new(),
                     kind,
+                    functions: &signatures,
+                    return_type: None,
                     arguments: spec.as_ref().map(|s| s.required),
                     units: &mut units,
                     registry: &self.registry,
@@ -444,6 +577,7 @@ impl Compiler {
                     command: spec,
                     code: semantic.code,
                     locals: semantic.locals,
+                    repeat_slots: semantic.repeat_slots,
                     event_addon,
                 });
             }
@@ -463,6 +597,8 @@ impl Compiler {
         if errors.is_empty() {
             Ok(CompiledScripts(Arc::new(Program {
                 handlers,
+                functions,
+                globals: self.globals.clone().unwrap_or_default(),
                 limits: self.limits.clone(),
                 case_sensitive: self.case_sensitive,
                 units,
@@ -507,13 +643,23 @@ fn validate_prefixes(prefixes: &[String], span: Span, d: &mut Diagnostics<'_>) {
         }
     }
 }
+fn guarantees_return(body: &[ast::Statement]) -> bool {
+    body.iter().any(|statement| match &statement.kind {
+        StatementKind::Return(_) => true,
+        StatementKind::If(_, yes, no) => guarantees_return(yes) && guarantees_return(no),
+        _ => false,
+    })
+}
 struct Semantic<'a, 'b> {
     d: &'a mut Diagnostics<'b>,
     bindings: HashMap<String, (usize, Type)>,
     locals: usize,
+    repeat_slots: usize,
     code: Vec<Instruction>,
     kind: EventKind,
     arguments: Option<usize>,
+    functions: &'a HashMap<String, Signature>,
+    return_type: Option<Option<Type>>,
     units: &'a mut usize,
     registry: &'a Registry,
     capabilities: &'a [Capability],
@@ -559,6 +705,56 @@ impl Semantic<'_, '_> {
             compiled.push(e);
         }
         Some(compiled)
+    }
+
+    fn function_call(
+        &mut self,
+        name: &str,
+        args: &[ast::Expr],
+        span: Span,
+        depth: usize,
+    ) -> Option<(usize, Vec<Expression>, Option<Type>)> {
+        let Some(signature) = self.functions.get(name) else {
+            self.d
+                .push(span, Category::Scope, "unknown function in this file");
+            return None;
+        };
+        if args.len() != signature.parameters.len() {
+            self.d.push(
+                span,
+                Category::Type,
+                "wrong number of arguments for function",
+            );
+            return None;
+        }
+        let mut compiled = Vec::with_capacity(args.len());
+        for (arg, ty) in args.iter().zip(&signature.parameters) {
+            let (expression, actual) = self.expr(arg, depth + 1)?;
+            if actual != *ty {
+                self.d
+                    .push(arg.span, Category::Type, "function argument type mismatch");
+                return None;
+            }
+            compiled.push(expression);
+        }
+        Some((signature.index, compiled, signature.result))
+    }
+
+    fn patch_jump(&mut self, index: usize, destination: usize) {
+        if let Some(instruction) = self.code.get_mut(index) {
+            match &mut instruction.operation {
+                Operation::FalseJump(_, target)
+                | Operation::Jump(target)
+                | Operation::Repeat(_, _, target) => *target = destination,
+                _ => {}
+            }
+        }
+    }
+
+    fn scoped_block(&mut self, body: &[ast::Statement], depth: usize) {
+        let original = self.bindings.clone();
+        self.block(body, depth + 1);
+        self.bindings = original;
     }
 
     fn charge(&mut self, span: Span) -> bool {
@@ -607,6 +803,36 @@ impl Semantic<'_, '_> {
                         );
                     }
                 }
+                StatementKind::UpdateGlobal(name, value, add) => {
+                    let Some((value, Type::Integer)) = self.expr(value, 1) else {
+                        self.d.push(
+                            span,
+                            Category::Type,
+                            "global counters require integer values",
+                        );
+                        continue;
+                    };
+                    self.emit(
+                        span,
+                        Operation::UpdateGlobal(name.as_str().into(), value, *add),
+                    );
+                }
+                StatementKind::DeleteGlobal(name) => {
+                    self.emit(span, Operation::DeleteGlobal(name.as_str().into()))
+                }
+                StatementKind::Wait(value) => {
+                    if self.return_type.is_some() {
+                        self.d
+                            .push(span, Category::Type, "wait is only available in a handler");
+                        continue;
+                    }
+                    let Some((value, Type::Integer)) = self.expr(value, 1) else {
+                        self.d
+                            .push(span, Category::Type, "wait duration must be an integer");
+                        continue;
+                    };
+                    self.emit(span, Operation::Wait(value));
+                }
                 StatementKind::Set(name, e) => {
                     if let Some((e, ty)) = self.expr(e, 1) {
                         let slot = if let Some((slot, old)) = self.bindings.get(name) {
@@ -634,44 +860,112 @@ impl Semantic<'_, '_> {
                     }
                 }
                 StatementKind::Addon(id, args) => {
+                    if self.return_type.is_some() {
+                        self.d.push(
+                            span,
+                            Category::Type,
+                            "addon effects are only available in handlers",
+                        );
+                        continue;
+                    }
                     if let Some(entry) = self.entry(*id, span) {
                         if let Some(args) = self.arguments(&entry, args, 1) {
                             self.emit(span, Operation::Addon(entry, args));
                         }
                     }
                 }
+                StatementKind::Stop if self.return_type.is_some() => {
+                    self.d
+                        .push(span, Category::Type, "use return inside a function");
+                }
                 StatementKind::Stop => self.emit(span, Operation::Stop),
+                StatementKind::Return(value) => {
+                    let Some(expected) = self.return_type else {
+                        self.d.push(
+                            span,
+                            Category::Type,
+                            "return is only available in a function",
+                        );
+                        continue;
+                    };
+                    let compiled = match value {
+                        Some(expr) => match self.expr(expr, 1) {
+                            Some((expr, ty)) if Some(ty) == expected => Some(expr),
+                            _ => {
+                                self.d
+                                    .push(span, Category::Type, "function return type mismatch");
+                                continue;
+                            }
+                        },
+                        None if expected.is_none() => None,
+                        None => {
+                            self.d.push(
+                                span,
+                                Category::Type,
+                                "function must return its declared type",
+                            );
+                            continue;
+                        }
+                    };
+                    self.emit(span, Operation::Return(compiled));
+                }
+                StatementKind::Call(expr) => {
+                    if let ExprKind::Call(name, args) = &expr.kind {
+                        match self.function_call(name, args, span, 1) {
+                            Some((index, args, None)) => {
+                                self.emit(span, Operation::Call(index, args))
+                            }
+                            Some(_) => {
+                                self.d
+                                    .push(span, Category::Type, "call requires a void function")
+                            }
+                            None => {}
+                        }
+                    } else {
+                        self.d
+                            .push(span, Category::Type, "call requires a named void function");
+                    }
+                }
+                StatementKind::Repeat(count, body) => {
+                    let Some((count, Type::Integer)) = self.expr(count, 1) else {
+                        self.d
+                            .push(span, Category::Type, "repeat count must be an integer");
+                        continue;
+                    };
+                    let start = self.code.len();
+                    let slot = self.repeat_slots;
+                    self.repeat_slots += 1;
+                    self.emit(span, Operation::Repeat(count, slot, 0));
+                    self.scoped_block(body, depth);
+                    self.emit(span, Operation::RepeatNext(slot, start + 1));
+                    self.patch_jump(start, self.code.len());
+                }
+                StatementKind::While(condition, body) => {
+                    let Some((condition, Type::Boolean)) = self.expr(condition, 1) else {
+                        self.d
+                            .push(span, Category::Type, "while condition must be boolean");
+                        continue;
+                    };
+                    let start = self.code.len();
+                    self.emit(span, Operation::FalseJump(condition, 0));
+                    self.scoped_block(body, depth);
+                    self.emit(span, Operation::Jump(start));
+                    self.patch_jump(start, self.code.len());
+                }
                 StatementKind::If(condition, yes, no) => {
                     let Some((condition, Type::Boolean)) = self.expr(condition, 1) else {
                         self.d
                             .push(span, Category::Type, "if condition must be boolean");
                         continue;
                     };
-                    let original = self.bindings.clone();
                     let branch = self.code.len();
                     self.emit(span, Operation::FalseJump(condition, 0));
-                    self.block(yes, depth + 1);
+                    self.scoped_block(yes, depth);
                     let jump = self.code.len();
                     self.emit(span, Operation::Jump(0));
-                    let alternate = self.code.len();
-                    self.bindings = original.clone();
-                    self.block(no, depth + 1);
-                    self.bindings = original;
-                    let end = self.code.len();
-                    if let Some(Instruction {
-                        operation: Operation::FalseJump(_, target),
-                        ..
-                    }) = self.code.get_mut(branch)
-                    {
-                        *target = alternate;
-                    }
-                    if let Some(Instruction {
-                        operation: Operation::Jump(target),
-                        ..
-                    }) = self.code.get_mut(jump)
-                    {
-                        *target = end;
-                    }
+                    self.patch_jump(branch, self.code.len());
+                    self.scoped_block(no, depth);
+                    self.patch_jump(jump, self.code.len());
                 }
             }
         }
@@ -710,6 +1004,7 @@ impl Semantic<'_, '_> {
                 }
                 (Expression::Literal(value.clone()), value.ty())
             }
+            ExprKind::Global(name) => (Expression::Global(name.as_str().into()), Type::Integer),
             ExprKind::Local(name) => {
                 let Some((slot, ty)) = self.bindings.get(name) else {
                     self.d.push(
@@ -721,8 +1016,21 @@ impl Semantic<'_, '_> {
                 };
                 (Expression::Local(*slot), *ty)
             }
+            ExprKind::Name(name)
+                if self.return_type.is_some() && self.bindings.contains_key(name) =>
+            {
+                let (slot, ty) = self.bindings[name];
+                (Expression::Local(slot), ty)
+            }
             ExprKind::Name(name) => match name.as_str() {
                 "message" if self.kind == EventKind::Message => (Expression::Message, Type::String),
+                "message-id" if self.kind == EventKind::Message => {
+                    (Expression::MessageId, Type::Integer)
+                }
+                "message-type" if self.kind == EventKind::Message => {
+                    (Expression::MessageType, Type::Integer)
+                }
+                "sent-at" if self.kind == EventKind::Message => (Expression::SentAt, Type::Integer),
                 "sender" | "sender-id" if self.kind == EventKind::Message => {
                     (Expression::Sender, Type::Integer)
                 }
@@ -758,7 +1066,13 @@ impl Semantic<'_, '_> {
             ExprKind::Template(parts) => {
                 let mut compiled = Vec::new();
                 for p in parts {
-                    compiled.push(self.expr(p, depth + 1)?.0);
+                    let (value, ty) = self.expr(p, depth + 1)?;
+                    if matches!(ty, Type::List(_) | Type::Map(_)) {
+                        self.d
+                            .push(p.span, Category::Type, "interpolation requires a scalar");
+                        return None;
+                    }
+                    compiled.push(value);
                 }
                 (Expression::Template(compiled), Type::String)
             }
@@ -776,6 +1090,68 @@ impl Semantic<'_, '_> {
                 (
                     Expression::Equal(Box::new(a), Box::new(b), *neg),
                     Type::Boolean,
+                )
+            }
+            ExprKind::Call(name, arguments) => {
+                if let Some(builtin) = Builtin::named(name) {
+                    let mut compiled = Vec::with_capacity(arguments.len());
+                    let mut types = Vec::with_capacity(arguments.len());
+                    for arg in arguments {
+                        let (expr, ty) = self.expr(arg, depth + 1)?;
+                        compiled.push(expr);
+                        types.push(ty);
+                    }
+                    let Some(ty) = builtin.result(&types) else {
+                        self.d.push(
+                            span,
+                            Category::Type,
+                            "invalid collection function arguments",
+                        );
+                        return None;
+                    };
+                    return Some((Expression::Builtin(builtin, compiled), ty));
+                }
+                let (index, arguments, result) =
+                    self.function_call(name, arguments, span, depth)?;
+                let Some(ty) = result else {
+                    self.d
+                        .push(span, Category::Type, "void function cannot produce a value");
+                    return None;
+                };
+                (Expression::Call(index, arguments), ty)
+            }
+            ExprKind::Not(value) => {
+                let (value, ty) = self.expr(value, depth + 1)?;
+                if ty != Type::Boolean {
+                    self.d
+                        .push(span, Category::Type, "not operand must be boolean");
+                    return None;
+                }
+                (Expression::Not(Box::new(value)), Type::Boolean)
+            }
+            ExprKind::Binary(operator, left, right) => {
+                let (left, left_type) = self.expr(left, depth + 1)?;
+                let (right, right_type) = self.expr(right, depth + 1)?;
+                let (input, output) = match operator {
+                    Binary::Contains | Binary::StartsWith | Binary::EndsWith => {
+                        (Type::String, Type::Boolean)
+                    }
+                    Binary::Less | Binary::LessEqual | Binary::Greater | Binary::GreaterEqual => {
+                        (Type::Integer, Type::Boolean)
+                    }
+                    _ => (Type::Integer, Type::Integer),
+                };
+                if left_type != input || right_type != input {
+                    self.d.push(
+                        span,
+                        Category::Type,
+                        "binary operator operand type mismatch",
+                    );
+                    return None;
+                }
+                (
+                    Expression::Binary(*operator, Box::new(left), Box::new(right)),
+                    output,
                 )
             }
             ExprKind::And(a, b) | ExprKind::Or(a, b) => {

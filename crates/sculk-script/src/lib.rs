@@ -14,12 +14,16 @@
 //! ```
 pub mod addon;
 mod ast;
+mod collections;
 mod compiler;
+mod globals;
 mod lexer;
 mod parser;
 mod runtime;
 pub use ast::{Type, Value};
+pub use collections::{Collection, Scalar};
 pub use compiler::{CompiledScripts, Compiler, HandlerInfo};
+pub use globals::{CounterError, GlobalCounters};
 pub use runtime::{Execution, ExecutionError, RuntimeDiagnostic, RuntimeError};
 use std::{fmt, path::Path, time::Duration};
 

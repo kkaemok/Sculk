@@ -18,12 +18,15 @@ pub fn valid_prefix(prefix: &str, allow_empty: bool) -> bool {
 }
 impl Prefixes {
     pub fn new(default: &str) -> Self {
-        let mut this = Self {
-            nodes: vec![Node::default()],
-            tables: Vec::new(),
-        };
+        let mut this = Self::empty();
         this.add(default);
         this
+    }
+    pub fn empty() -> Self {
+        Self {
+            nodes: vec![Node::default()],
+            tables: Vec::new(),
+        }
     }
     pub fn index(&self, prefix: &str) -> Option<usize> {
         self.tables.iter().position(|(p, _)| p == prefix)

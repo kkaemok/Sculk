@@ -1,7 +1,7 @@
 # Bot framework (Phase 9)
 
 `sculk-bot` implements offline-tested Rust event and command dispatch above
-`sculk-client`. It starts no account authentication and adds no live WRITE adapter.
+`sculk-client`. It provides adapters for explicitly authenticated sessions and offline events.
 Protocol, transport, chat/history and authentication remain in the existing crates.
 
 ## Public API
@@ -161,3 +161,20 @@ boundaries. Variables/functions and compiled programs belong in that future host
 parser, compiler, runtime and semantics. Phase 9 added no loader or language.
 Phase 10 implements that compiled frontend, diagnostics and bounded runtime in
 [sculk-script](scripting.md), using these same APIs without another dispatcher.
+
+
+## Authenticated room source
+
+Use SessionSource::select with an explicitly authenticated Session, one
+authorized room and a cancellation receiver. It verifies CHATINFO, dispatches
+messages for that room, and surfaces lag or connection loss. Install
+source.text_outbound(interval) explicitly to allow one text send attempt per
+interval in that room. Normal Context::reply uses the same outbound adapter
+for Rust handlers and installed scripts. It sends ordinary text.
+[Messaging profile and receipt semantics](messaging.md).
+
+Bot::room_prefixes compiles a replacement prefix table for one room. Its
+registry-wide aliases must be unique when the same prefixes expose them.
+Bot::run_source borrows the compiled bot for independent finite sources.
+Each run has its own queue and recent-ID window. Feed a continuous stream
+through a single run to preserve that window.

@@ -10,6 +10,7 @@ pub enum Kind {
     Integer(i64),
     String(Vec<Piece>),
     Local(String),
+    Global(String),
     Colon,
     Comma,
     Left,
@@ -62,25 +63,30 @@ pub fn tokens(text: &str, base: Span, d: &mut Diagnostics<'_>) -> Vec<Token> {
                     d.push(
                         at(&columns, base, start, i),
                         Category::Lexical,
-                        "unterminated event-local variable",
+                        "unterminated variable",
                     );
                     break;
                 };
                 let name = &text[i..i + end];
                 i += end + 1;
-                if !name.starts_with('_')
-                    || name.len() < 2
-                    || name.len() > 64
-                    || !name.chars().all(|c| c.is_alphanumeric() || c == '_')
+                if let Some(name) = name
+                    .strip_prefix("global::")
+                    .filter(|name| crate::globals::valid_name(name))
                 {
+                    Kind::Global(name.into())
+                } else if name.starts_with('_')
+                    && (2..=64).contains(&name.len())
+                    && name.chars().all(|c| c.is_alphanumeric() || c == '_')
+                {
+                    Kind::Local(name.into())
+                } else {
                     d.push(
                         at(&columns, base, start, i),
                         Category::Scope,
-                        "use an event-local variable such as {_name}",
+                        "invalid variable name",
                     );
                     continue;
                 }
-                Kind::Local(name.into())
             }
             '"' => {
                 let mut pieces = Vec::new();

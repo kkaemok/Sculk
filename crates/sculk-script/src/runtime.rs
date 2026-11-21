@@ -1,11 +1,11 @@
 use crate::addon::{AddonContext, AddonError, CallGuard, Capability, Entry, Implementation, Meter};
 use crate::{
-    ast::Value,
-    compiler::{Expression, Operation},
-    CompiledScripts, Limits, Span,
+    ast::{Binary, Value},
+    compiler::{Expression, Function, Operation},
+    Collection, CompiledScripts, GlobalCounters, Limits, Span,
 };
 use sculk_bot::{Context, OutboundError};
-use std::{fmt::Write, sync::Arc};
+use std::{fmt::Write, sync::Arc, time::Duration};
 use tokio::time::Instant;
 
 /// Runtime failures contain no text, private identifiers or adapter internals.
@@ -17,6 +17,20 @@ pub enum RuntimeError {
     Deadline,
     #[error("script execution step budget exceeded")]
     Steps,
+    #[error("script integer arithmetic overflow or division by zero")]
+    Arithmetic,
+    #[error("script function call depth exceeded")]
+    CallDepth,
+    #[error("script repeat count outside 0..=10000")]
+    RepeatCount,
+    #[error("script counter storage unavailable or full")]
+    State,
+    #[error("script wait duration outside 0..=30000 milliseconds")]
+    WaitDuration,
+    #[error("collection index or key absent")]
+    CollectionIndex,
+    #[error("collection size or key length exceeded")]
+    CollectionLimit,
     #[error("script string/output limit exceeded")]
     StringLimit,
     #[error("script expression requires unavailable event context")]
@@ -85,6 +99,9 @@ struct Budget<'a> {
     deadline: Instant,
     shared: Option<Arc<Meter>>,
     capabilities: &'a [Capability],
+    functions: &'a [Function],
+    globals: &'a GlobalCounters,
+    call_depth: usize,
 }
 impl Budget<'_> {
     fn used(&self) -> usize {
@@ -192,8 +209,16 @@ enum ResultValue<'a> {
     String(Text<'a>),
     Integer(i64),
     Boolean(bool),
+    Collection(Collection),
 }
 impl ResultValue<'_> {
+    fn integer(self) -> Result<i64, RuntimeError> {
+        if let Self::Integer(value) = self {
+            Ok(value)
+        } else {
+            Err(RuntimeError::Invalid)
+        }
+    }
     fn boolean(self) -> Result<bool, RuntimeError> {
         if let Self::Boolean(b) = self {
             Ok(b)
@@ -214,6 +239,7 @@ impl ResultValue<'_> {
             }
             Self::Integer(n) => Value::Integer(n),
             Self::Boolean(b) => Value::Boolean(b),
+            Self::Collection(value) => Value::Collection(value),
         })
     }
     fn append(&self, out: &mut String, limit: usize) -> Result<(), RuntimeError> {
@@ -226,6 +252,7 @@ impl ResultValue<'_> {
                     n.unsigned_abs().ilog10() as usize + 1 + usize::from(*n < 0)
                 }
             }
+            Self::Collection(_) => return Err(RuntimeError::Invalid),
             Self::Boolean(b) => {
                 if *b {
                     4
@@ -242,6 +269,7 @@ impl ResultValue<'_> {
             Self::Integer(n) => {
                 write!(out, "{n}").map_err(|_| RuntimeError::Invalid)?;
             }
+            Self::Collection(_) => return Err(RuntimeError::Invalid),
             Self::Boolean(b) => out.push_str(if *b { "true" } else { "false" }),
         }
         Ok(())
@@ -252,8 +280,50 @@ fn from_value(v: &Value) -> ResultValue<'_> {
         Value::String(s) => ResultValue::String(Text::Borrowed(s)),
         Value::Integer(n) => ResultValue::Integer(*n),
         Value::Boolean(b) => ResultValue::Boolean(*b),
+        Value::Collection(value) => ResultValue::Collection(value.clone()),
     }
 }
+fn from_owned(value: Value) -> ResultValue<'static> {
+    match value {
+        Value::String(s) => ResultValue::String(Text::Shared(s)),
+        Value::Integer(n) => ResultValue::Integer(n),
+        Value::Boolean(b) => ResultValue::Boolean(b),
+        Value::Collection(value) => ResultValue::Collection(value),
+    }
+}
+
+fn binary<'a>(
+    operator: Binary,
+    left: ResultValue<'a>,
+    right: ResultValue<'a>,
+) -> Result<ResultValue<'a>, RuntimeError> {
+    if let (ResultValue::String(left), ResultValue::String(right)) = (&left, &right) {
+        return Ok(ResultValue::Boolean(match operator {
+            Binary::Contains => left.contains(&**right),
+            Binary::StartsWith => left.starts_with(&**right),
+            Binary::EndsWith => left.ends_with(&**right),
+            _ => return Err(RuntimeError::Invalid),
+        }));
+    }
+    let a = left.integer()?;
+    let b = right.integer()?;
+    let result = match operator {
+        Binary::Add => a.checked_add(b),
+        Binary::Subtract => a.checked_sub(b),
+        Binary::Multiply => a.checked_mul(b),
+        Binary::Divide => a.checked_div(b),
+        Binary::Remainder => a.checked_rem(b),
+        Binary::Less => return Ok(ResultValue::Boolean(a < b)),
+        Binary::LessEqual => return Ok(ResultValue::Boolean(a <= b)),
+        Binary::Greater => return Ok(ResultValue::Boolean(a > b)),
+        Binary::GreaterEqual => return Ok(ResultValue::Boolean(a >= b)),
+        _ => return Err(RuntimeError::Invalid),
+    };
+    result
+        .map(ResultValue::Integer)
+        .ok_or(RuntimeError::Arithmetic)
+}
+
 fn eval<'a>(
     e: &'a Expression,
     ctx: &'a Context,
@@ -264,11 +334,7 @@ fn eval<'a>(
     let value = match e {
         Expression::Addon(entry, arguments) => {
             let values = evaluate_arguments(arguments, ctx, locals, budget)?;
-            match budget.call(entry, &values)? {
-                Value::String(s) => ResultValue::String(Text::Shared(s)),
-                Value::Integer(n) => ResultValue::Integer(n),
-                Value::Boolean(b) => ResultValue::Boolean(b),
-            }
+            from_owned(budget.call(entry, &values)?)
         }
         Expression::Literal(v) => from_value(v),
         Expression::Message => {
@@ -276,6 +342,22 @@ fn eval<'a>(
         }
         Expression::Sender => {
             ResultValue::Integer(ctx.sender().ok_or(RuntimeError::Context)?.get())
+        }
+        Expression::Global(name) => {
+            ResultValue::Integer(budget.globals.get(name).map_err(|_| RuntimeError::State)?)
+        }
+        Expression::MessageId => {
+            ResultValue::Integer(ctx.message().ok_or(RuntimeError::Context)?.id.get())
+        }
+        Expression::MessageType => ResultValue::Integer(
+            ctx.message()
+                .ok_or(RuntimeError::Context)?
+                .kind
+                .wire_type()
+                .into(),
+        ),
+        Expression::SentAt => {
+            ResultValue::Integer(ctx.message().ok_or(RuntimeError::Context)?.sent_at_seconds)
         }
         Expression::Room => ResultValue::Integer(ctx.room().ok_or(RuntimeError::Context)?.get()),
         Expression::Argument(index) => ResultValue::String(Text::Borrowed(
@@ -303,7 +385,29 @@ fn eval<'a>(
         Expression::Equal(a, b, neg) => {
             let a = eval(a, ctx, locals, budget)?;
             let b = eval(b, ctx, locals, budget)?;
+            if let ResultValue::Collection(value) = &a {
+                budget.charge(value.len().div_ceil(8))?;
+            }
             ResultValue::Boolean((a == b) != *neg)
+        }
+        Expression::Binary(operator, left, right) => {
+            let left = eval(left, ctx, locals, budget)?;
+            let right = eval(right, ctx, locals, budget)?;
+            binary(*operator, left, right)?
+        }
+        Expression::Not(value) => {
+            ResultValue::Boolean(!eval(value, ctx, locals, budget)?.boolean()?)
+        }
+        Expression::Builtin(builtin, args) => {
+            let values = evaluate_arguments(args, ctx, locals, budget)?;
+            if let Some(Value::Collection(value)) = values.first() {
+                budget.charge(value.len().div_ceil(8))?;
+            }
+            from_owned(builtin.run(values)?)
+        }
+        Expression::Call(index, args) => {
+            let values = evaluate_arguments(args, ctx, locals, budget)?;
+            from_owned(call_function(*index, values, budget)?.ok_or(RuntimeError::Invalid)?)
         }
         Expression::And(a, b) => {
             let a = eval(a, ctx, locals, budget)?.boolean()?;
@@ -331,6 +435,134 @@ fn evaluate_arguments(
         .map(|arg| eval(arg, ctx, locals, budget)?.owned(budget.limits))
         .collect()
 }
+struct Frame {
+    locals: Vec<Option<Value>>,
+    repeats: Vec<u16>,
+    pc: usize,
+}
+enum Action<'a> {
+    Advance,
+    Stop,
+    Return(Option<Value>),
+    Reply(&'a Expression),
+    Wait(Duration),
+    Addon(&'a Entry, &'a [Expression]),
+}
+impl Frame {
+    fn new(locals: usize, repeats: usize) -> Self {
+        Self {
+            locals: vec![None; locals],
+            repeats: vec![0; repeats],
+            pc: 0,
+        }
+    }
+
+    fn step<'a>(
+        &mut self,
+        operation: &'a Operation,
+        budget: &mut Budget<'_>,
+    ) -> Result<Action<'a>, RuntimeError> {
+        self.pc += 1;
+        let ctx = budget.ctx;
+        let limits = budget.limits;
+        match operation {
+            Operation::Reply(expr) => return Ok(Action::Reply(expr)),
+            Operation::Addon(entry, args) => return Ok(Action::Addon(entry, args)),
+            Operation::Stop => return Ok(Action::Stop),
+            Operation::Return(expr) => {
+                let result = expr
+                    .as_ref()
+                    .map(|expr| eval(expr, ctx, &self.locals, budget)?.owned(limits))
+                    .transpose()?;
+                return Ok(Action::Return(result));
+            }
+            Operation::Set(slot, expr) => {
+                let value = eval(expr, ctx, &self.locals, budget)?.owned(limits)?;
+                *self.locals.get_mut(*slot).ok_or(RuntimeError::Invalid)? = Some(value);
+            }
+            Operation::UpdateGlobal(name, expr, add) => {
+                let value = eval(expr, ctx, &self.locals, budget)?.integer()?;
+                budget.globals.update(name, |old| {
+                    if *add {
+                        old.checked_add(value).ok_or(RuntimeError::Arithmetic)
+                    } else {
+                        Ok(value)
+                    }
+                })?;
+            }
+            Operation::DeleteGlobal(name) => budget
+                .globals
+                .delete(name)
+                .map_err(|_| RuntimeError::State)?,
+            Operation::Wait(expr) => {
+                let milliseconds = eval(expr, ctx, &self.locals, budget)?.integer()?;
+                if !(0..=30000).contains(&milliseconds) {
+                    return Err(RuntimeError::WaitDuration);
+                }
+                return Ok(Action::Wait(Duration::from_millis(milliseconds as u64)));
+            }
+            Operation::FalseJump(expr, target) => {
+                if !eval(expr, ctx, &self.locals, budget)?.boolean()? {
+                    self.pc = *target;
+                }
+            }
+            Operation::Jump(target) => self.pc = *target,
+            Operation::Repeat(expr, slot, target) => {
+                let count = eval(expr, ctx, &self.locals, budget)?.integer()?;
+                if !(0..=10000).contains(&count) {
+                    return Err(RuntimeError::RepeatCount);
+                }
+                self.repeats[*slot] = count as u16;
+                if count == 0 {
+                    self.pc = *target;
+                }
+            }
+            Operation::RepeatNext(slot, target) => {
+                let remaining = &mut self.repeats[*slot];
+                *remaining = remaining.checked_sub(1).ok_or(RuntimeError::Invalid)?;
+                if *remaining > 0 {
+                    self.pc = *target;
+                }
+            }
+            Operation::Call(index, args) => {
+                let values = evaluate_arguments(args, ctx, &self.locals, budget)?;
+                call_function(*index, values, budget)?;
+            }
+        }
+        Ok(Action::Advance)
+    }
+}
+
+fn call_function(
+    index: usize,
+    args: Vec<Value>,
+    budget: &mut Budget<'_>,
+) -> Result<Option<Value>, RuntimeError> {
+    budget.charge(1)?;
+    if budget.call_depth >= 16 {
+        return Err(RuntimeError::CallDepth);
+    }
+    let function = budget.functions.get(index).ok_or(RuntimeError::Invalid)?;
+    let mut frame = Frame::new(function.locals, function.repeat_slots);
+    for (argument, slot) in args.into_iter().zip(&mut frame.locals) {
+        *slot = Some(argument);
+    }
+    budget.call_depth += 1;
+    let result = (|| {
+        while let Some(instruction) = function.code.get(frame.pc) {
+            budget.tick()?;
+            match frame.step(&instruction.operation, budget)? {
+                Action::Advance => {}
+                Action::Return(value) => return Ok(value),
+                _ => return Err(RuntimeError::Invalid),
+            }
+        }
+        Ok(None)
+    })();
+    budget.call_depth -= 1;
+    result
+}
+
 impl CompiledScripts {
     /// Execute one compiled handler through an existing context. Trusted hosts can
     /// invoke this directly; permissions and argument bounds are still enforced.
@@ -364,6 +596,9 @@ impl CompiledScripts {
                 deadline,
                 shared: None,
                 capabilities: &self.0.capabilities,
+                functions: &self.0.functions,
+                globals: &self.0.globals,
+                call_depth: 0,
             };
             if let Some(event) = &handler.event_addon {
                 let accepted = budget
@@ -379,11 +614,10 @@ impl CompiledScripts {
                     });
                 }
             }
-            let mut locals = vec![None; handler.locals];
-            let mut pc = 0;
+            let mut frame = Frame::new(handler.locals, handler.repeat_slots);
             let mut yielded_at = 0;
             let mut execution = Execution::default();
-            while let Some(instruction) = handler.code.get(pc) {
+            while let Some(instruction) = handler.code.get(frame.pc) {
                 let failure = |error| ExecutionError {
                     error,
                     span: Some(instruction.span),
@@ -393,12 +627,18 @@ impl CompiledScripts {
                 // skip cooperative yields merely by avoiding exact multiples.
                 if budget.used() - yielded_at >= 64 {
                     tokio::task::yield_now().await;
+                    budget.charge(0).map_err(failure)?;
                     yielded_at = budget.used();
                 }
-                match &instruction.operation {
-                    Operation::Addon(entry, args) => {
-                        let args =
-                            evaluate_arguments(args, ctx, &locals, &mut budget).map_err(failure)?;
+                match frame
+                    .step(&instruction.operation, &mut budget)
+                    .map_err(failure)?
+                {
+                    Action::Advance => {}
+                    Action::Wait(duration) => tokio::time::sleep(duration).await,
+                    Action::Addon(entry, args) => {
+                        let args = evaluate_arguments(args, ctx, &frame.locals, &mut budget)
+                            .map_err(failure)?;
                         let (addon_ctx, guard) = budget.context(entry, &args).map_err(failure)?;
                         let result = match &entry.implementation {
                             Implementation::Async(f) => f(addon_ctx, args).await,
@@ -408,8 +648,8 @@ impl CompiledScripts {
                         budget.charge(0).map_err(failure)?;
                         result.map_err(|e| failure(e.into()))?;
                     }
-                    Operation::Reply(e) => {
-                        let value = eval(e, ctx, &locals, &mut budget).map_err(failure)?;
+                    Action::Reply(e) => {
+                        let value = eval(e, ctx, &frame.locals, &mut budget).map_err(failure)?;
                         let ResultValue::String(text) = value else {
                             return Err(failure(RuntimeError::Invalid));
                         };
@@ -418,33 +658,12 @@ impl CompiledScripts {
                             .map_err(|e| failure(RuntimeError::Outbound(e)))?;
                         execution.replies += 1;
                     }
-                    Operation::Set(slot, e) => {
-                        let value = eval(e, ctx, &locals, &mut budget)
-                            .and_then(|v| v.owned(limits))
-                            .map_err(failure)?;
-                        *locals
-                            .get_mut(*slot)
-                            .ok_or_else(|| failure(RuntimeError::Invalid))? = Some(value);
-                    }
-                    Operation::FalseJump(e, target) => {
-                        if !eval(e, ctx, &locals, &mut budget)
-                            .and_then(ResultValue::boolean)
-                            .map_err(failure)?
-                        {
-                            pc = *target;
-                            continue;
-                        }
-                    }
-                    Operation::Jump(target) => {
-                        pc = *target;
-                        continue;
-                    }
-                    Operation::Stop => {
+                    Action::Stop => {
                         execution.stopped = true;
                         break;
                     }
+                    Action::Return(_) => return Err(failure(RuntimeError::Invalid)),
                 }
-                pc += 1;
             }
             execution.steps = budget.used();
             execution.replies += budget.shared.as_ref().map_or(0, |m| m.replies());

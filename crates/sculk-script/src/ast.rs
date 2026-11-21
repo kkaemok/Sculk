@@ -1,16 +1,19 @@
 //! Typed syntax nodes, discarded after semantic compilation.
-use crate::Span;
+use crate::{Collection, Scalar, Span};
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum Type {
     String,
     Integer,
     Boolean,
+    List(Scalar),
+    Map(Scalar),
 }
 #[derive(Clone, PartialEq, Eq)]
 pub enum Value {
     String(std::sync::Arc<str>),
     Integer(i64),
     Boolean(bool),
+    Collection(Collection),
 }
 impl Value {
     pub fn as_integer(&self) -> Option<i64> {
@@ -39,6 +42,7 @@ impl Value {
             Self::String(_) => Type::String,
             Self::Integer(_) => Type::Integer,
             Self::Boolean(_) => Type::Boolean,
+            Self::Collection(collection) => collection.ty(),
         }
     }
 }
@@ -52,13 +56,33 @@ pub struct Expr {
     pub kind: ExprKind,
     pub span: Span,
 }
+#[derive(Clone, Copy, Debug)]
+pub enum Binary {
+    Add,
+    Subtract,
+    Multiply,
+    Divide,
+    Remainder,
+    Less,
+    LessEqual,
+    Greater,
+    GreaterEqual,
+    Contains,
+    StartsWith,
+    EndsWith,
+}
+
 #[derive(Debug)]
 pub enum ExprKind {
     Literal(Value),
     Name(String),
     Local(String),
+    Global(String),
     Template(Vec<Expr>),
     Equal(Box<Expr>, Box<Expr>, bool),
+    Binary(Binary, Box<Expr>, Box<Expr>),
+    Not(Box<Expr>),
+    Call(String, Vec<Expr>),
     And(Box<Expr>, Box<Expr>),
     Or(Box<Expr>, Box<Expr>),
     Addon(crate::addon::SyntaxId, Vec<Expr>),
@@ -72,12 +96,26 @@ pub struct Statement {
 pub enum StatementKind {
     Reply(Expr),
     Set(String, Expr),
+    UpdateGlobal(String, Expr, bool),
+    DeleteGlobal(String),
+    Wait(Expr),
     Stop,
+    Return(Option<Expr>),
+    Call(Expr),
+    Repeat(Expr, Vec<Statement>),
+    While(Expr, Vec<Statement>),
     If(Expr, Vec<Statement>, Vec<Statement>),
     Addon(crate::addon::SyntaxId, Vec<Expr>),
 }
 #[derive(Debug)]
 pub enum Declaration {
+    Function {
+        name: String,
+        parameters: Vec<(String, Type)>,
+        result: Option<Type>,
+        body: Vec<Statement>,
+        span: Span,
+    },
     Event {
         kind: sculk_bot::EventKind,
         body: Vec<Statement>,

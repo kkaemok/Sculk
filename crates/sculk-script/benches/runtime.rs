@@ -77,6 +77,7 @@ fn source(case: &str) -> String {
         "condition"=>format!("on message:\n    if message is \"{text}\":\n        reply \"ok\"\n"),
         "variable"=>format!("on message:\n    set {{_x}} to message\n    if {{_x}} is \"{text}\":\n        reply {{_x}}\n"),
         "command"=>"command ping:\n    trigger:\n        reply \"ok\"\n".into(),
+        "function"=>"function greet(name: text) -> text:\n    return \"Hello, %name%!\"\ncommand greet <name>:\n    trigger:\n        reply greet(arg-1)\n".into(),
         "interpolation"=>"command greet <name>:\n    trigger:\n        reply \"Hello, %arg-1%!\"\n".into(),
         _=>unreachable!(),
     }
@@ -139,7 +140,7 @@ fn bot(script: bool, case: &str, mock: Arc<Mock>) -> Bot {
                 Ok(())
             })
             .unwrap(),
-        "interpolation" => bot
+        "interpolation" | "function" => bot
             .register(Command::new("greet"), |ctx| async move {
                 let name = ctx.arguments().next().ok_or(HandlerError::Failed)?;
                 ctx.reply(&format!("Hello, {name}!")).await?;
@@ -222,8 +223,8 @@ fn main() {
     );
     runtime.block_on(async{
         let(_tx,cancel)=watch::channel(false);
-        for case in ["message","condition","variable","command","interpolation"]{
-            let input=match case{"command"=>format!("!ping {}","x".repeat(506)),"interpolation"=>format!("!greet \"{}\"","x".repeat(503)),_=>"x".repeat(512)};assert_eq!(input.len(),512);
+        for case in ["message","condition","variable","command","interpolation","function"]{
+            let input=match case{"command"=>format!("!ping {}","x".repeat(506)),"interpolation"|"function"=>format!("!greet \"{}\"","x".repeat(503)),_=>"x".repeat(512)};assert_eq!(input.len(),512);
             for script in [false,true]{
                 let mock=Arc::new(Mock{calls:AtomicUsize::new(0)});let bot=bot(script,case,mock.clone());let source=messages(&input);
                 let region=Region::new(GLOBAL);let started=Instant::now();let report=bot.run(source,cancel.clone()).await;let elapsed=started.elapsed();let allocations=region.change();

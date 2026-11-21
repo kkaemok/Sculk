@@ -1,6 +1,6 @@
 use crate::{
     command, permissions::Permissions, BoxFuture, Command, Context, DisabledOutbound, Event,
-    EventKind, EventSource, MemoryPermissions, Outbound, PermissionId, PermissionStore,
+    EventKind, EventSource, MemoryPermissions, Outbound, PermissionId, PermissionStore, RoomId,
     SourceError,
 };
 use std::{
@@ -112,6 +112,8 @@ pub struct Bot {
     config: Config,
     commands: Vec<Registered>,
     prefixes: crate::prefix::Prefixes,
+    room_prefixes: HashMap<RoomId, crate::prefix::Prefixes>,
+    room_names: HashMap<String, usize>,
     allow_prefixless: bool,
     handlers: Vec<(EventKind, Handler)>,
     errors: Vec<Handler>,
@@ -135,6 +137,8 @@ impl Bot {
         }
         Ok(Self {
             prefixes: crate::prefix::Prefixes::new(&config.prefix),
+            room_prefixes: HashMap::new(),
+            room_names: HashMap::new(),
             config,
             commands: Vec::new(),
             allow_prefixless: false,
@@ -159,6 +163,47 @@ impl Bot {
             return Err(RegistrationError::Invalid);
         }
         self.allow_prefixless = allow;
+        Ok(())
+    }
+    /// Replace all command prefixes in a configured room. Every registered name
+    /// must be unique in these rooms, even when global prefixes disambiguate it.
+    /// Validation is atomic. An empty list is invalid.
+    pub fn room_prefixes(
+        &mut self,
+        room: RoomId,
+        prefixes: &[String],
+    ) -> Result<(), RegistrationError> {
+        if prefixes.is_empty()
+            || prefixes.len() > 16
+            || (self.room_prefixes.len() == 128 && !self.room_prefixes.contains_key(&room))
+        {
+            return Err(RegistrationError::Limit);
+        }
+        let mut table = crate::prefix::Prefixes::empty();
+        for prefix in prefixes {
+            if !crate::valid_prefix(prefix, false) {
+                return Err(RegistrationError::Invalid);
+            }
+            if table.index(prefix).is_some() {
+                return Err(RegistrationError::Duplicate);
+            }
+            table.add(prefix);
+        }
+        if self.room_prefixes.is_empty() {
+            let mut names = HashMap::new();
+            for (index, registered) in self.commands.iter().enumerate() {
+                for name in
+                    std::iter::once(&registered.command.name).chain(&registered.command.aliases)
+                {
+                    let key = command::key(name, self.config.case_sensitive);
+                    if names.insert(key, index).is_some() {
+                        return Err(RegistrationError::Duplicate);
+                    }
+                }
+            }
+            self.room_names = names;
+        }
+        self.room_prefixes.insert(room, table);
         Ok(())
     }
     /// Replace permission lookups before startup. No server roles are consulted.
@@ -221,6 +266,9 @@ impl Bot {
                 return Err(RegistrationError::Duplicate);
             }
         }
+        if names.iter().any(|name| self.room_names.contains_key(name)) {
+            return Err(RegistrationError::Duplicate);
+        }
         let prefixes = command
             .prefixes
             .as_deref()
@@ -259,6 +307,10 @@ impl Bot {
                     .insert(name.clone(), self.commands.len());
             }
         }
+        if !self.room_prefixes.is_empty() {
+            self.room_names
+                .extend(names.into_iter().map(|name| (name, self.commands.len())));
+        }
         self.commands.push(Registered {
             command,
             handler: boxed(handler),
@@ -293,8 +345,13 @@ impl Bot {
     /// are spawned. EOF drains; cancellation/overflow/source error interrupts the
     /// current handler and discards queued work with explicit report counters.
     /// Dropping this future drops its owned source and all callback futures.
-    pub async fn run<S: EventSource>(
-        self,
+    pub async fn run<S: EventSource>(self, source: S, cancel: watch::Receiver<bool>) -> RunReport {
+        self.run_source(source, cancel).await
+    }
+    /// Reuse the compiled registry across independent sources. Queue and dedup
+    /// state belong to each invocation; a continuous live stream uses one run.
+    pub async fn run_source<S: EventSource>(
+        &self,
         mut source: S,
         mut cancel: watch::Receiver<bool>,
     ) -> RunReport {
@@ -413,10 +470,17 @@ impl Bot {
         else {
             return;
         };
-        let Some(prefix_index) = self.prefixes.longest(text) else {
+        let room_table = ctx.room().and_then(|room| self.room_prefixes.get(&room));
+        let table = room_table.unwrap_or(&self.prefixes);
+        let Some(prefix_index) = table.longest(text) else {
             return;
         };
-        let (prefix, lookup) = &self.prefixes.tables[prefix_index];
+        let (prefix, lookup) = &table.tables[prefix_index];
+        let lookup = if room_table.is_some() {
+            &self.room_names
+        } else {
+            lookup
+        };
         let invocation = match command::parse_invocation(text, prefix) {
             Ok(Some(i)) => i,
             Ok(None) => return,

@@ -469,7 +469,9 @@ fn atom_end(tokens: &[Token], start: usize) -> Option<usize> {
             }
             None
         }
-        Kind::Word(_) | Kind::Integer(_) | Kind::String(_) | Kind::Local(_) => Some(start + 1),
+        Kind::Word(_) | Kind::Integer(_) | Kind::String(_) | Kind::Local(_) | Kind::Global(_) => {
+            Some(start + 1)
+        }
         _ => None,
     }
 }

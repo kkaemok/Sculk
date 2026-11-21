@@ -768,3 +768,102 @@ async fn outbound_failure_is_reported_once_and_later_invocations_continue() {
     );
     assert_eq!(report.shutdown, Ok(()));
 }
+
+#[tokio::test]
+async fn functions_share_typed_locals_arithmetic_collections_and_loop_state() {
+    let program = compile(
+        r#"command hello <name>:
+    trigger:
+        reply greet(arg-1)
+        call bump()
+        reply "count=%{global::messages}%"
+function greet(name: text) -> text:
+    set {_list} to integer-list(2, 3)
+    set {_list} to append({_list}, 4)
+    set {_scores} to integer-map()
+    set {_scores} to put({_scores}, name, total({_list}))
+    if not has-key({_scores}, name):
+        return "missing"
+    else if name starts with "A":
+        return "%key-at({_scores}, 0)%=%get({_scores}, name)%"
+    else:
+        return "%value-at({_scores}, 0)%"
+function total(numbers: integer-list) -> integer:
+    set {_i} to 0
+    set {_sum} to 0
+    repeat length(numbers) times:
+        set {_sum} to {_sum} + item(numbers, {_i}) * 2
+        set {_i} to {_i} + 1
+    while {_sum} > 15:
+        set {_sum} to {_sum} - 1
+    return {_sum}
+function bump() -> void:
+    add 1 to {global::messages}
+    return
+"#,
+    );
+    let (out, report, errors) = run(&program, &["!hello Ada", "!hello Bob"]).await;
+    assert_eq!(out, ["Ada=15", "count=1", "15", "count=2"]);
+    assert_eq!(report.failures, 0, "{errors:?}");
+}
+
+#[tokio::test(start_paused = true)]
+async fn runtime_checks_overflow_recursion_loop_steps_and_deadlines() {
+    let program = compile(
+        r#"function recurse(x: integer) -> integer:
+    return recurse(x)
+command overflow:
+    trigger:
+        reply "%9223372036854775807 + 1%"
+command recursion:
+    trigger:
+        reply "%recurse(0)%"
+command loop:
+    trigger:
+        while true:
+            set {_x} to 1
+command wait:
+    trigger:
+        wait 1000 milliseconds
+        reply "too late"
+command index:
+    trigger:
+        reply "%item(integer-list(), 0)%"
+"#,
+    );
+    let (out, _, errors) = run(
+        &program,
+        &["!overflow", "!recursion", "!loop", "!wait", "!index"],
+    )
+    .await;
+    assert!(out.is_empty());
+    assert_eq!(
+        errors.iter().map(|error| error.error).collect::<Vec<_>>(),
+        [
+            RuntimeError::Arithmetic,
+            RuntimeError::CallDepth,
+            RuntimeError::Steps,
+            RuntimeError::Deadline,
+            RuntimeError::CollectionIndex
+        ]
+    );
+}
+
+#[test]
+fn functions_reject_mismatched_returns_unknown_calls_and_collection_types() {
+    for text in [
+        "function f(x: integer) -> text:\n    return x\n",
+        "function f(x: integer) -> integer:\n    if x > 0:\n        return x\n",
+        "function f() -> integer:\n    return missing()\n",
+        "function f() -> integer-list:\n    return integer-list(true)\n",
+        "function f():\n    stop\n",
+        "function f(a: text,):\n    return\n",
+    ] {
+        assert!(Compiler::default()
+            .compile(&[Source {
+                filename: "invalid.sc",
+                text
+            }])
+            .is_err());
+    }
+}

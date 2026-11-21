@@ -1,4 +1,4 @@
-# Sculk scripting (Phase 10)
+# Sculk scripting
 
 `sculk-script` is a small, compiled Skript-inspired language above `sculk-bot`.
 It works offline with synthetic events and explicit mock outbound adapters. It
@@ -128,10 +128,9 @@ Aliases share one handler, arguments and permissions. Colliding `(prefix, name)`
 pairs, repeated aliases and ambiguous definitions across loaded files fail during
 compilation. Conflicts with preexisting native commands fail during installation.
 
-Room-specific prefix overrides are future work. Prefix validation/matching stays
-in the bot's centralized prefix registry, the configuration boundary for a future
-room-aware selection policy. Scripts will reuse that policy; no second matcher,
-room database or persistent configuration is introduced here.
+A host can set room-specific prefixes through the bot registry. Room prefixes
+replace command prefixes in that room. Native and script commands share the
+same name lookup and ambiguity checks. [Configuration](runtime.md).
 
 ## Arguments and permissions
 
@@ -174,7 +173,9 @@ effects and outbound adapter. No live sender is installed by default.
 | `room`, `room-id`, `event-room` | Exact signed 64-bit room in message/command/synchronization handlers |
 | `arg-N` | String at a declared command position |
 | `"text"`, integer, `true` / `false` | Literal string / integer / boolean |
-| `{_name}` | Previously assigned event-local value |
+| `{_name}` | Previously assigned local value |
+| `{global::name}` | Shared integer counter with a default of zero |
+| `message-id`, `message-type`, `sent-at` | Exact log ID, wire type and Unix-second timestamp in message handlers |
 
 Unavailable contexts fail at compile time where known. A typed non-text incoming
 message can still lack text; evaluating `message` then returns a runtime context
@@ -197,7 +198,7 @@ on message:
 `is` / `is not` compare values of the same type. String equality compares exact
 UTF-8 text. `and` / `or` require booleans and short-circuit; precedence is comparison,
 then `and`, then `or`. Parentheses group expressions. An `if` condition must be
-boolean; `else:` is optional. Nesting is bounded. There are no unrestricted loops.
+boolean. It can be followed by else if and else branches. Nesting is bounded.
 
 Locals use `{_name}` with Unicode alphanumerics/underscore after the initial `_`.
 Assignment defines a value or replaces an existing value of the same type. Using
@@ -298,11 +299,79 @@ errors distinguish context/argument/permission failures, step/output limits,
 deadline/cancellation and outbound refusal/unknown delivery. There is no silent
 retry, effect rollback or exactly-once guarantee.
 
-Unsupported: persistent/global variables, functions, loops, arithmetic, floating
-point, user-defined types, hot reload, imports, filesystem/network/environment
-access, arbitrary native calls, account tokens, raw client internals, moderation
-effects and room-administrator inference. Phase 11 adds a [typed native addon
-registry](addons.md) for registered expressions, conditions, effects and existing
-event aliases. These are statically linked trusted Rust implementations, not
-arbitrary script native calls or a native-code sandbox. The compiler/runtime and
-resource limits remain shared; source-level functions remain future work.
+Script code operates on its compiled language and registered addon capabilities.
+Filesystem, environment variables, arbitrary networking and credentials are
+outside that interface. The [typed native addon registry](addons.md) runs
+trusted statically linked Rust with explicit capability checks.
+Floating point, imports, background timers, and server moderation remain
+unsupported.
+
+## Functions and iteration
+
+~~~vb
+function greet(name: text) -> text:
+    return "Hello, %name%!"
+
+function increment():
+    add 1 to {global::messages}
+
+command greet <name>:
+    trigger:
+        call increment()
+        reply greet(arg-1)
+~~~
+
+Declare functions anywhere at the top level. They are scoped to their source
+file. Call typed functions in expressions, including interpolation, and use
+call name() for void functions. A void function can return without a value
+or finish its block. Typed functions require a value on each return path.
+Each call gets fresh locals. Function arguments use bare names and types
+text, integer, boolean or the collections below. Functions can call other
+functions and synchronous addon expressions. Network effects and wait belong
+in handlers, and event context is passed as explicit values.
+
+Arithmetic uses checked i64 operations. Use +, - (with spaces), *, /, and
+mod, with multiplication, division and remainder evaluated before addition
+and subtraction. Integer division truncates toward zero. Compare integers
+with <, <=, > or >=. Text comparisons support contains, starts with and
+ends with. Use not to negate a condition. Evaluation reports division by zero
+and overflow as runtime errors.
+
+~~~vb
+on message:
+    set {_labels} to text-list("first", "second")
+    set {_i} to 0
+    repeat length({_labels}) times:
+        reply item({_labels}, {_i})
+        set {_i} to {_i} + 1
+~~~
+
+repeat evaluates its integer count once and accepts 0 through 10,000. while
+reevaluates a boolean condition before each iteration. Both share the
+caller's budget, which also covers nested functions and addon calls. A
+function call can nest up to 16 frames. An infinite loop ends with a budget
+or deadline error. wait 10 milliseconds suspends the current handler
+within its cancellation and deadline limits. It schedules no detached work.
+
+## Collections and counters
+
+text-list(...), integer-list(...) and boolean-list(...) construct
+homogeneous lists. item(list, index), length(collection) and contains(list,
+value) read them. append(list, value) and remove(list, index) return a new
+list that can be assigned back to a local variable. Indexing starts at zero.
+
+text-map(), integer-map() and boolean-map() construct empty maps with
+text keys. put(map, key, value) and remove-key(map, key) return updated maps.
+Use has-key(map, key) before get(map, key) if the key can be missing.
+key-at(map, index) and value-at(map, index) let a bounded loop traverse
+entries in key order. Missing keys and out-of-range indices give runtime
+errors. Collections are bounded to 128 entries. Map keys are at most 128
+UTF-8 bytes. Constructors use the same 16-argument bound as functions.
+
+Read shared integer counters with {global::name}. set {global::name} to 10
+assigns a value, add 1 to {global::name} increments atomically, and
+delete {global::name} removes it. Separate operations can interleave between
+concurrent host invocations. For an atomic increment use add rather than
+read, calculate and set. An application can preserve the same counters across
+reloads through Compiler::with_globals. The CLI optionally persists them in
+SQLite. [Persistence and restart](runtime.md#persistence).
