@@ -446,3 +446,69 @@ async fn authenticated_sender_correlates_room_ack_rejection_and_cancellation_wit
         SendError::NotSent
     );
 }
+
+#[test]
+fn quote_metadata_preserves_large_ids_and_raw_attachment_on_parse_failure() {
+    let mut data = message().document().unwrap();
+    let log = data.get_document_mut("chatLog").unwrap();
+    log.insert("type", 26);
+    let attachment = format!(
+        r#"{{"src_logId":{},"src_userId":{},"src_type":1,"src_message":"escaped \n line","src_linkId":{}}}"#,
+        ID + 5,
+        ID + 6,
+        ID + 7
+    );
+    log.insert("attachment", &attachment);
+    let msg = Message::from_packet(packet("MSG", data.clone())).unwrap();
+    let quote = msg.quote().unwrap().unwrap();
+    assert_eq!(quote.message.get(), ID + 5);
+    assert_eq!(quote.sender.get(), ID + 6);
+    assert_eq!(quote.link.unwrap().get(), ID + 7);
+    assert_eq!(quote.preview, "escaped \n line");
+    assert!(!format!("{quote:?}").contains("escaped"));
+    let wrong = attachment.replace(&format!("\"src_logId\":{}", ID + 5), "\"src_logId\":1.0");
+    data.get_document_mut("chatLog")
+        .unwrap()
+        .insert("attachment", &wrong);
+    let msg = Message::from_packet(packet("MSG", data)).unwrap();
+    assert!(msg.quote().is_err());
+    assert_eq!(msg.attachment(), Some(wrong.as_str()));
+}
+
+#[tokio::test]
+async fn open_link_queries_preserve_id_domains_and_reject_mismatched_results() {
+    use sculk_client::read_only::{Error as ReadError, OpenLinkId};
+    let (session, mut peer) = setup(4, Duration::from_secs(30)).await;
+    let room = RoomId::new(ID).unwrap();
+    let (link, ()) = tokio::join!(session.room_open_link(room), async {
+        let req = peer.next().await.unwrap().unwrap();
+        assert_eq!(req.command.as_str(), "CHATINFO");
+        assert_eq!(req.document().unwrap(), doc! {"chatId":ID});
+        let mut response = packet("CHATINFO", doc! {"chatInfo":{"chatId":ID,"li":ID+1}});
+        response.id = req.id;
+        peer.send(response).await.unwrap();
+    });
+    let link = link.unwrap().unwrap();
+    assert_eq!(link.get(), ID + 1);
+    for returned in [ID + 1, ID] {
+        let (info, ()) = tokio::join!(session.open_link_info(link), async {
+            let req = peer.next().await.unwrap().unwrap();
+            assert_eq!(req.command.as_str(), "INFOLINK");
+            assert_eq!(req.document().unwrap(), doc! {"lis":[ID+1]});
+            let mut response = packet(
+                "INFOLINK",
+                doc! {"ols":[{"li":returned,"ln":"synthetic","lt":2}]},
+            );
+            response.id = req.id;
+            peer.send(response).await.unwrap();
+        });
+        if returned == link.get() {
+            let info = info.unwrap().unwrap();
+            assert_eq!(info.id, OpenLinkId::new(ID + 1).unwrap());
+            assert_eq!(info.kind, Some(2));
+            assert_eq!(info.name, "synthetic");
+        } else {
+            assert!(matches!(info, Err(ReadError::InvalidResponse)));
+        }
+    }
+}

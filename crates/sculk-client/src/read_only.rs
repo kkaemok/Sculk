@@ -42,6 +42,38 @@ impl RoomId {
         self.0
     }
 }
+/// Positive OpenChat link identifier. Rooms and links have separate ID spaces.
+#[derive(Clone, Copy, PartialEq, Eq, Hash)]
+pub struct OpenLinkId(i64);
+impl std::fmt::Debug for OpenLinkId {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.write_str("OpenLinkId([REDACTED])")
+    }
+}
+impl OpenLinkId {
+    /// Construct an exact positive OpenChat link identifier.
+    pub fn new(value: i64) -> Result<Self, Error> {
+        if value <= 0 {
+            Err(Error::InvalidRequest)
+        } else {
+            Ok(Self(value))
+        }
+    }
+    /// Read the exact identifier.
+    pub fn get(self) -> i64 {
+        self.0
+    }
+}
+
+/// Read-only metadata for one requested OpenChat link.
+pub struct OpenLinkInfo {
+    /// Exact ID returned by the server and checked against the request.
+    pub id: OpenLinkId,
+    /// User-provided link name.
+    pub name: String,
+    /// Raw link type if the server supplied it.
+    pub kind: Option<i32>,
+}
 /// Server pagination tokens. Opaque last_token_id may be signed; do not infer TTL.
 #[derive(Clone, Copy, Default, PartialEq, Eq)]
 pub struct Cursor {
@@ -220,20 +252,9 @@ impl Session {
     }
     /// Fetch the documented CHATINFO subset. The returned chatId must match.
     pub async fn room_info(&self, room: RoomId) -> Result<RoomInfo, Error> {
-        let body = parse(
-            self.request(request("CHATINFO", &doc! {"chatId":room.0})?)
-                .await?,
-            "CHATINFO",
-        )?;
-        let data = body
-            .get_document("chatInfo")
-            .map_err(|_| Error::InvalidResponse)?;
-        let id = positive(data, "chatId")?;
-        if id != room {
-            return Err(Error::InvalidResponse);
-        }
+        let data = self.room_document(room).await?;
         let metadata = if data.contains_key("chatMetas") {
-            let array = values(data, "chatMetas")?;
+            let array = values(&data, "chatMetas")?;
             if array.len() > 128 {
                 return Err(Error::InvalidResponse);
             }
@@ -254,11 +275,59 @@ impl Session {
             None
         };
         Ok(RoomInfo {
-            id,
-            kind: text(data, "type", 128)?,
-            active_members: count(data, "activeMembersCount")?,
+            id: room,
+            kind: text(&data, "type", 128)?,
+            active_members: count(&data, "activeMembersCount")?,
             metadata,
         })
+    }
+    async fn room_document(&self, room: RoomId) -> Result<Document, Error> {
+        let mut body = parse(
+            self.request(request("CHATINFO", &doc! {"chatId": room.get()})?)
+                .await?,
+            "CHATINFO",
+        )?;
+        match body.remove("chatInfo") {
+            Some(Bson::Document(data)) if positive(&data, "chatId")? == room => Ok(data),
+            _ => Err(Error::InvalidResponse),
+        }
+    }
+
+    /// Inspect CHATINFO for a source-supported link association. None means
+    /// the peer omitted the association or supplied its zero sentinel.
+    pub async fn room_open_link(&self, room: RoomId) -> Result<Option<OpenLinkId>, Error> {
+        let data = self.room_document(room).await?;
+        match data.get("li").map(number).transpose()? {
+            None | Some(0) => Ok(None),
+            Some(value) => OpenLinkId::new(value)
+                .map(Some)
+                .map_err(|_| Error::InvalidResponse),
+        }
+    }
+
+    /// Inspect a known OpenChat link using INFOLINK. An empty response list
+    /// leaves metadata unavailable. This request does not join or grant room access.
+    pub async fn open_link_info(&self, link: OpenLinkId) -> Result<Option<OpenLinkInfo>, Error> {
+        let packet = request("INFOLINK", &doc! {"lis": [link.get()]})?;
+        let body = parse(self.request(packet).await?, "INFOLINK")?;
+        let Some(_) = body.get("ols") else {
+            return Ok(None);
+        };
+        match values(&body, "ols")?.as_slice() {
+            [] => Ok(None),
+            [Bson::Document(info)] if required_number(info, "li")? == link.get() => {
+                let kind = info
+                    .get("lt")
+                    .map(|value| i32::try_from(number(value)?).map_err(|_| Error::InvalidResponse))
+                    .transpose()?;
+                Ok(Some(OpenLinkInfo {
+                    id: link,
+                    name: text(info, "ln", 4096)?.ok_or(Error::InvalidResponse)?,
+                    kind,
+                }))
+            }
+            _ => Err(Error::InvalidResponse),
+        }
     }
     /// Fetch one GETMEM snapshot without deriving global account/profile identity.
     pub async fn room_members(&self, room: RoomId) -> Result<Members, Error> {

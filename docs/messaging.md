@@ -55,6 +55,13 @@ attachment schema, title, identity or missing value is fabricated. Resource boun
 are the framing limit (1 MiB) and at most 128 fields in each top/log container.
 These are local safety policies, not researched server limits.
 
+Type-26 messages expose quote metadata through Message::quote on demand.
+The historical JSON subset preserves exact source IDs, the source wire type,
+preview text and the optional distinct OpenChat link ID. Malformed or
+oversized extensions fail explicitly while the original attachment remains
+available. Outbound quoted replies require a compatible profile and remain
+unsupported.
+
 ## Text request foundation
 
 ```rust

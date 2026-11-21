@@ -1,5 +1,28 @@
 # Compatibility matrix
 
+## Current implementation
+
+The Sculk executable runs compiled script bots offline, including room
+prefixes, local permissions, reload and SQLite counters. Its optional owner
+probe shares the SDK's authenticated client. Current server compatibility is
+unverified. The table below records implementation and evidence separately.
+
+| Operation | Request / response or push subset | Profile and transport | Evidence and status |
+|---|---|---|---|
+| GETCONF | Device metadata → Checkin host/port candidates | Historical Agent-style Booking over verified TLS | Offline integration; [source and schemas](research.md) |
+| CHECKIN | Account and profile metadata → assigned host and port | Explicit caller-provided TLS or pinned RSA/GCM route | Offline integration; [source and schemas](research.md) |
+| LOGINLIST | Authorized token, UUID and profile → status and exact account identity | Explicit TLS or RSA/GCM; selected Android probe uses historical GCM | Offline integration; [source and schemas](research.md) |
+| PING | Empty BSON → correlated acknowledgment | Caller-managed connected session | Offline recovery test; [recovery](recovery.md) |
+| MSG | Push with chatId and chatLog fields logId, authorId, type, sendAt and optional message/attachment | Historical Agent/node session schemas | Offline tested; malformed and unknown pushes preserved. [Messaging](messaging.md) |
+| WRITE | Basic PC-style chatId, msg, type, noSeen → room-bound chatId, logId and sendAt | Historical Agent basic request and node flat receipt | Offline local TLS round trip. The upstream tablet role has a different request and route. [References](research.md#reference-refresh-on-2026-11-21) |
+| LCHATLIST | Cursor and ID arrays → chatDatas, eof and cursor | Historical connected session | Offline one-page query. [Research](research.md) |
+| CHATINFO | chatId → chatInfo, echoed chatId, optional type/count/metas or li | Historical connected session | Offline room checks and link association. [Agent source](https://github.com/agent-messenger/agent-messenger/blob/abc81f9873da06ab13503e5124c68fde036c0e9b/src/platforms/kakaotalk/client.ts) |
+| GETMEM | chatId → members and token | Historical connected session | Offline read-only snapshot. [Research](research.md) |
+| INFOLINK | lis with one exact link ID → ols with li, ln and optional lt | Historical Agent and node connected session | Offline link lookup; IDs must match. [node schema](https://github.com/storycraft/node-kakao/blob/8512e4699e2cd4c26516b80d38b57b2f85a6cc8a/src/packet/struct/openlink.ts) |
+| SYNCMSG | chatId, cur, cnt, max → bounded chatLogs, isOK and optional minLogId | Historical connected session | Offline history and gap recovery. [Recovery](recovery.md) |
+| NEWMEM / DELMEM | Upstream interprets chatId and chatLog.authorId | Reported by Agent; OpenChat identity and voluntary-leave semantics need corroboration | Unknown raw pushes. [Agent listener](https://github.com/agent-messenger/agent-messenger/blob/abc81f9873da06ab13503e5124c68fde036c0e9b/src/platforms/kakaotalk/listener.ts) |
+| KICKMEM / KLSYNC / KLDELITEM | Present-member kick, list read and list deletion in reference code | Historical and upstream implementation | Unsupported SDK mutations. A departed-member insertion operation remains unknown. [References](research.md#reference-refresh-on-2026-11-21) |
+
 ## Phase 11 addon status (2026-10-30)
 
 Typed statically linked Rust addons are **offline tested** with the shared compiler,
@@ -54,7 +77,7 @@ No live KakaoTalk test has been performed. All passing tests are offline.
 | Persistent device identity | Optional | Owner-only mode, stable reload, symlink/unsafe mode rejection | No | Unix startup support; tokens not persisted |
 | Native end-to-end developer example | Yes | Build, help/check-config and underlying integrated sequence | No | Runtime --live and explicit account/registration approval required |
 | Secret session persistence | No | No | No | Deferred with authentication |
-| Read-only room page / metadata / members | Optional | Source requests, schema fixtures, exact Int64, status/room/cursor guards | No | Experimental subset; one page/request, no title/member guessing |
+| Read-only room page / metadata / members / OpenChat links | Optional | Source requests, schema fixtures, exact Int64, status/room/cursor guards | No | Experimental subset; one page/request, no title/member guessing |
 | Historical basic text WRITE | Session API, one-room bot adapter and owner CLI | Local TLS encoding, correlated receipt, rejection, timeout and cancellation | No | Historical basic profile. Current Android and tablet compatibility is unknown. |
 | Typed incoming MSG | Optional | Exact IDs, fields, unknown/malformed retention, lag/cancellation/expiry | No | Historical source subset; no replay guarantee |
 | Join/leave/kick/profile/role events, read marks and moderation | No | No | No | Unsupported; raw packets preserved without inferred actions |

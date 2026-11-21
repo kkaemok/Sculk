@@ -87,6 +87,40 @@ impl From<i32> for MessageType {
         }
     }
 }
+/// A type-26 attachment's source-message metadata. Sender IDs are scoped
+/// to the referenced conversation. Displayed text is server-provided metadata.
+pub struct Quote<'a> {
+    /// Source log ID.
+    pub message: MessageId,
+    /// Source sender ID in that context.
+    pub sender: SenderId,
+    /// Original numeric type, preserving unknown message types.
+    pub kind: MessageType,
+    /// OpenChat link, when independently supplied by the attachment.
+    pub link: Option<crate::read_only::OpenLinkId>,
+    /// Quoted preview received from the server.
+    pub preview: std::borrow::Cow<'a, str>,
+}
+
+impl std::fmt::Debug for Quote<'_> {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.write_str("Quote([REDACTED])")
+    }
+}
+
+#[derive(serde::Deserialize)]
+struct WireQuote<'a> {
+    #[serde(rename = "src_logId")]
+    message: i64,
+    #[serde(rename = "src_userId")]
+    sender: i64,
+    #[serde(rename = "src_type")]
+    kind: i32,
+    #[serde(rename = "src_linkId")]
+    link: Option<i64>,
+    #[serde(borrow, rename = "src_message")]
+    preview: std::borrow::Cow<'a, str>,
+}
 /// Invalid or ambiguous MSG schema. No peer content appears in diagnostics.
 #[derive(Clone, Copy, Debug, PartialEq, Eq, thiserror::Error)]
 #[error("invalid message event")]
@@ -231,6 +265,31 @@ impl Message {
     pub fn attachment(&self) -> Option<&str> {
         string(self.log(), "attachment").expect("validated MSG")
     }
+    /// Decode the historical quoted-reply attachment subset on demand. The
+    /// original attachment is retained even when its schema is invalid.
+    pub fn quote(&self) -> Result<Option<Quote<'_>>, InvalidMessage> {
+        if self.kind != MessageType::Reply {
+            return Ok(None);
+        }
+        let attachment = self
+            .attachment()
+            .filter(|attachment| attachment.len() <= 32768)
+            .ok_or(InvalidMessage)?;
+        let quote: WireQuote<'_> = serde_json::from_str(attachment).map_err(|_| InvalidMessage)?;
+        let link = quote
+            .link
+            .map(crate::read_only::OpenLinkId::new)
+            .transpose()
+            .map_err(|_| InvalidMessage)?;
+        Ok(Some(Quote {
+            message: MessageId::new(quote.message)?,
+            sender: SenderId::new(quote.sender)?,
+            kind: MessageType::from(quote.kind),
+            link,
+            preview: quote.preview,
+        }))
+    }
+
     /// Raw source prevId, when supplied. Zero means the first log in node-kakao's
     /// schema; numeric IDs themselves are not assumed contiguous.
     pub fn previous_id(&self) -> Option<i64> {
