@@ -107,14 +107,8 @@ pub async fn send_approval(
     let mut tty = terminal()?;
     writeln!(
         tty,
-        "Confirm the configured room {room} and your authorization to send there. Type room:"
+        "Review the exact test message (escaped) for room {room}: {text:?}\\nType send to submit once using the historical basic WRITE profile:"
     )?;
-    tty.flush()?;
-    if !confirmation_from_file(tty, cancel.clone(), b"room").await? {
-        return Ok(false);
-    }
-    let mut tty = terminal()?;
-    writeln!(tty, "Review the exact test message (escaped): {text:?}\nType send to submit once using the historical basic WRITE profile:")?;
     tty.flush()?;
     confirmation_from_file(tty, cancel, b"send").await
 }

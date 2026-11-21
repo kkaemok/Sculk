@@ -1,81 +1,30 @@
 //! Opt-in local validation tool. Help/dry-run perform no network operations.
 #![cfg(feature = "live")]
 mod diagnostics;
+mod owner;
 mod ui;
 mod validation;
-use diagnostics::{Milestones, Progress, Stage};
+pub use diagnostics::{Milestones, Progress, Stage};
+pub use owner::{permit_service, preflight, signal_channel, Approved, Authorized, Prepared};
 use sculk_client::{
-    auth::{self, AndroidProfile, DeviceIdentity, Limits, Provider},
-    connect::{BookingSchema, Endpoint, Options, Protection},
-    dial::{ConnectProxy, DirectTcp},
+    auth,
     messaging::{Event as MessageEvent, SendError},
     read_only::Cursor,
-    tls::{TlsSettings, TrustStore},
-    Config,
 };
-use sculk_protocol::handshake::ServerKey;
-use serde::{Deserialize, Serialize};
+use serde::Serialize;
 use sha2::{Digest, Sha256};
 use std::{
     io::{self, IsTerminal, Write},
     path::{Path, PathBuf},
     time::Duration,
 };
-use zeroize::Zeroizing;
-type Failure = Box<dyn std::error::Error + Send + Sync>;
-#[derive(Deserialize)]
-#[serde(deny_unknown_fields)]
-struct Configuration {
-    expected_user_id: u64,
-    email: String,
-    device_file: PathBuf,
-    server_key_file: PathBuf,
-    server_key_sha256: String,
-    #[serde(default)]
-    connection_mode: ConnectionMode,
-    tcp_proxy_host: Option<String>,
-    tcp_proxy_port: Option<u16>,
-    allowed_endpoints: Vec<Destination>,
-    app_version: String,
-    os_version: String,
-    api_level: String,
-    device_name: String,
-    test_room_id: Option<i64>,
-    test_message_file: Option<PathBuf>,
-}
-#[derive(Default, Deserialize)]
-#[serde(rename_all = "kebab-case")]
-enum ConnectionMode {
-    #[default]
-    Proxy,
-    Direct,
-}
-enum Route {
-    Proxy(ConnectProxy),
-    Direct(DirectTcp),
-}
-impl Route {
-    async fn dial(
-        &self,
-        endpoint: Endpoint,
-        cancel: tokio::sync::watch::Receiver<bool>,
-    ) -> io::Result<tokio::net::TcpStream> {
-        match self {
-            Self::Proxy(route) => route.dial(endpoint, cancel).await,
-            Self::Direct(route) => route.dial(endpoint, cancel).await,
-        }
-    }
-}
-#[derive(Deserialize)]
-#[serde(deny_unknown_fields)]
-struct Destination {
-    host: String,
-    port: u16,
-}
+pub type Failure = Box<dyn std::error::Error + Send + Sync>;
 #[derive(Clone, Copy, PartialEq, Eq)]
 enum Mode {
     Help,
     DryRun,
+    CheckRoom,
+    Preflight,
     Live,
 }
 struct Arguments {
@@ -111,6 +60,8 @@ impl Arguments {
         result.mode = match args[0].as_str() {
             "--live" => Mode::Live,
             "--dry-run" | "--check-config" => Mode::DryRun,
+            "--check-room" => Mode::CheckRoom,
+            "--preflight" => Mode::Preflight,
             _ => return Err(fail("invalid mode; use --help")),
         };
         result.config = Some(PathBuf::from(&args[1]));
@@ -352,23 +303,6 @@ fn write_report(path: &Path, report: &Report) -> Result<(), Failure> {
         Err(fail("private reports require Unix file permission support"))
     }
 }
-fn state_name(state: &auth::State) -> &'static str {
-    use auth::State::*;
-    match state {
-        Ready => "ready",
-        Authenticating => "authenticating",
-        NeedsApproval => "approval-required",
-        Approved => "approved",
-        RequestingChallenge => "requesting-challenge",
-        AwaitingDeviceConfirmation => "awaiting-device-confirmation",
-        Registering => "registering",
-        Registered => "registered",
-        CredentialsReady => "credentials-ready",
-        Refreshing => "refreshing",
-        Expired => "expired",
-        Failed(_) => "failed",
-    }
-}
 /// Run the owner probe with arguments following the executable name.
 pub fn run_cli(args: &[String]) -> std::process::ExitCode {
     if let Err(error) = run(args) {
@@ -394,208 +328,115 @@ pub fn run_cli(args: &[String]) -> std::process::ExitCode {
 fn run(args: &[String]) -> Result<(), Failure> {
     let args = Arguments::parse(args)?;
     if args.mode == Mode::Help {
-        println!("Sculk experimental connection validation\n--dry-run PATH [--report NEW_PATH]: local config/key checks only; no network\n--check-config is an alias for --dry-run\n--live PATH [--refresh] [--read-only] [--room-info] [--listen SECONDS | --receive-one SECONDS | --send-one DELAY_SECONDS] [--report NEW_PATH]: explicitly authorized account only\nLive mode requires a terminal, account approval, and separate device-registration approval.\n--receive-one requires configured test_room_id and separate room consent; validates one fresh text without logging content or IDs.\n--read-only requests one LCHATLIST page; --room-info checks the configured room; --listen 1..300 receives events and prints counts only. --send-one requires a private test_message_file and separate room and text confirmation. It submits one historical basic WRITE after the specified delay.\nReports contain separate fixed-label milestones and booleans; never secrets, IDs or approval codes.");
+        println!("Sculk experimental connection validation\n--dry-run PATH [--report NEW_PATH]: local config/key checks only; no network\n--check-config is an alias for --dry-run\n--check-room PATH: also require the selected room ID\n--preflight PATH [--report NEW_PATH]: check approved DNS/TCP or CONNECT routes without account traffic\n--live PATH [--refresh] [--read-only] [--room-info] [--listen SECONDS | --receive-one SECONDS | --send-one DELAY_SECONDS] [--report NEW_PATH]: explicitly authorized account only\nLive mode requires a terminal, account approval, and separate device-registration approval.\n--receive-one requires configured test_room_id and separate room consent; validates one fresh text without logging content or IDs.\n--read-only requests one LCHATLIST page; --room-info checks the configured room; --listen 1..300 receives events and prints counts only. --send-one requires a private test_message_file and separate room and text confirmation. It submits one historical basic WRITE after the specified delay.\nReports contain separate fixed-label milestones and booleans; never secrets, IDs or approval codes.");
         return Ok(());
     }
     let progress = Progress::default();
     let result = attempt(&args, &progress);
+    report(
+        args.report.as_deref(),
+        match args.mode {
+            Mode::Live => "live",
+            Mode::Preflight => "preflight",
+            _ => "dry-run",
+        },
+        &progress,
+        result.as_ref().err(),
+        None,
+    )?;
+    result
+}
+
+/// Report only fixed stage labels and bounded, typed status codes.
+pub fn report(
+    path: Option<&Path>,
+    mode: &'static str,
+    progress: &Progress,
+    failure: Option<&Failure>,
+    diagnostic: Option<(&'static str, Option<i64>)>,
+) -> Result<(), Failure> {
     let milestones = progress.milestones();
-    let (server_status, http_status) = result
-        .as_ref()
-        .err()
-        .map(status_codes)
-        .unwrap_or((None, None));
-    if let Some(path) = &args.report {
+    let (status, http_status) = failure.map(status_codes).unwrap_or((None, None));
+    let server_status = diagnostic.and_then(|(_, status)| status).or(status);
+    let category = diagnostic
+        .map(|(name, _)| name)
+        .or_else(|| failure.map(failure_category));
+    if let Some(path) = path {
         write_report(
             path,
             &Report {
-                mode: if args.mode == Mode::Live {
-                    "live"
-                } else {
-                    "dry-run"
-                },
+                mode,
                 schema_version: 2,
                 last_stage: progress.stage.get(),
                 milestones,
-                outcome: if result.is_ok() {
+                outcome: if failure.is_none() {
                     "completed"
                 } else {
                     "failed"
                 },
                 live_connection_verified: milestones.loginlist,
                 controlled_receive_verified: milestones.controlled_message,
-                failure_category: result.as_ref().err().map(failure_category),
+                failure_category: category,
                 server_status,
                 http_status,
             },
         )?;
     }
-    if result.is_err() {
-        eprintln!(
-            "Failed stage: {}. No automatic retry was performed.",
-            progress.stage.get().label()
-        );
+    if let Some(category) = category {
+        eprintln!("stage={} category={category}", progress.stage.get().label());
     }
-    result
+    Ok(())
 }
+
 fn attempt(args: &Arguments, progress: &Progress) -> Result<(), Failure> {
-    let bytes = auth::read_private_file(
-        args.config
-            .as_ref()
-            .ok_or_else(|| fail("missing configuration"))?,
-        16384,
-    )?;
-    let config: Configuration = serde_json::from_slice(&bytes).map_err(|_| {
-        fail("invalid private configuration (required fields include server_key_sha256)")
-    })?;
-    drop(bytes);
-    if config.expected_user_id == 0
-        || config.expected_user_id > i64::MAX as u64
-        || config.email.is_empty()
-        || config.email.len() > 320
-        || config.email.chars().any(char::is_control)
-    {
-        return Err(fail("invalid configured account"));
+    let path = args
+        .config
+        .as_deref()
+        .ok_or_else(|| fail("missing configuration"))?;
+    if args.mode == Mode::Preflight {
+        let runtime = tokio::runtime::Builder::new_current_thread()
+            .enable_all()
+            .build()?;
+        return runtime.block_on(async {
+            let (task, cancel) = signal_channel()?;
+            let result = preflight(path, progress, cancel).await;
+            task.abort();
+            result
+        });
     }
-    if config.test_room_id.is_some_and(|id| id <= 0)
-        || ((args.receive_one.is_some() || args.send_one.is_some())
-            && config.test_room_id.is_none())
-    {
-        return Err(fail(
-            "selected-room validation requires a positive configured test_room_id",
-        ));
-    }
-    let test_room = config
-        .test_room_id
-        .map(sculk_client::read_only::RoomId::new)
-        .transpose()?;
-    let profile = AndroidProfile {
-        app_version: config.app_version,
-        os_version: config.os_version,
-        api_level: config.api_level,
-        device_name: config.device_name,
-    };
-    profile.validate()?;
-    if !config.device_file.is_absolute() || !config.server_key_file.is_absolute() {
-        return Err(fail("identity and key paths must be absolute"));
-    }
-    let allowed = config
-        .allowed_endpoints
-        .iter()
-        .map(|d| Endpoint::new(&d.host, d.port))
-        .collect::<Result<Vec<_>, _>>()?;
-    let booking = Endpoint::new("booking-loco.kakao.com", 443)?;
-    if !allowed.contains(&booking) {
-        return Err(fail("allowlist must include Booking"));
-    }
-    let timeout = Duration::from_secs(15);
-    let route = match (
-        config.connection_mode,
-        config.tcp_proxy_host,
-        config.tcp_proxy_port,
-    ) {
-        (ConnectionMode::Proxy, Some(host), Some(port)) => {
-            Route::Proxy(ConnectProxy::new(host, port, allowed, timeout)?)
-        }
-        (ConnectionMode::Direct, None, None) => Route::Direct(DirectTcp::new(allowed, timeout)?),
-        _ => return Err(fail("connection mode and proxy settings disagree")),
-    };
-    let message = if args.send_one.is_some() {
-        let path = config
-            .test_message_file
-            .as_ref()
-            .filter(|path| path.is_absolute())
-            .ok_or_else(|| fail("send-one requires an absolute test_message_file path"))?;
-        let data = auth::read_private_file(path, 16384)?;
-        let text = Zeroizing::new(
-            std::str::from_utf8(&data)
-                .map_err(|_| fail("invalid UTF-8 test message"))?
-                .to_owned(),
-        );
-        if text.is_empty() || text.contains('\0') {
-            return Err(fail("invalid test message"));
-        }
-        Some(text)
-    } else {
-        None
-    };
-    progress.completed(Stage::Configuration);
-    progress.stage.set(Stage::ServerKey);
-    let key = auth::read_private_file(&config.server_key_file, 4096)?;
-    if !pin_matches(&key, &config.server_key_sha256) {
-        return Err(fail(
-            "RSA public-key fingerprint mismatch; verify provenance before any login",
-        ));
-    }
-    let key = ServerKey::from_pkcs1_der(&key).map_err(|_| fail("invalid RSA public key"))?;
-    progress.completed(Stage::ServerKey);
-    progress.stage.set(Stage::SystemTrust);
-    let mut trust = TrustStore::empty();
-    for cert in rustls_native_certs::load_native_certs().certs {
-        trust.add(cert).map_err(|_| fail("invalid system CA"))?;
-    }
-    if trust.is_empty() {
-        return Err(fail("system trust store unavailable"));
-    }
-    if args.mode == Mode::DryRun {
+    let selected = args.mode == Mode::CheckRoom
+        || args.receive_one.is_some()
+        || args.send_one.is_some()
+        || args.room_info;
+    let prepared = Prepared::load(path, progress, selected)?;
+    let room = prepared.room();
+    if matches!(args.mode, Mode::DryRun | Mode::CheckRoom) {
         progress.stage.set(Stage::LocalValidationComplete);
-        println!("LOCAL DRY RUN complete. No network requests, authentication or device identity creation. Live compatibility remains unverified.");
+        println!(
+            "Local configuration check complete. Target {} {}.",
+            std::env::consts::OS,
+            std::env::consts::ARCH
+        );
         return Ok(());
     }
-    progress.stage.set(Stage::AccountAuthorization);
-    if !ask(
-        "Authorize this configured test account for experimental authentication and connection?",
-        "authorize",
-    ) {
-        return Err(fail(
-            "test-account authorization not granted; no network request",
-        ));
-    }
-    if args.receive_one.is_some() || args.room_info {
-        progress.stage.set(Stage::RoomAuthorization);
-    }
-    if (args.receive_one.is_some() || args.room_info) && !ask("Authorize receive-only validation in the configured test room you own or have permission to test?", "receive") {
-        return Err(fail("test-room authorization not granted; no network request"));
-    }
-    progress.stage.set(Stage::DeviceIdentity);
-    let identity = DeviceIdentity::load_or_create(&config.device_file)?;
-    progress.stage.set(Stage::PasswordInput);
-    let password = Zeroizing::new(
-        rpassword::prompt_password("Account password (hidden): ")
-            .map_err(|_| fail("password prompt failed"))?,
-    );
-    let email = Zeroizing::new(config.email);
-    let mut provider = Provider::new(
-        profile,
-        identity,
-        config.expected_user_id,
-        Limits::default(),
-    )?;
     let runtime = tokio::runtime::Builder::new_current_thread()
         .enable_all()
         .build()?;
-    runtime.block_on(async{
-        let (cancel_tx,cancel)=tokio::sync::watch::channel(false);let signal=tokio::spawn(async move{let _=tokio::signal::ctrl_c().await;cancel_tx.send_replace(true);});
-        let mut states=provider.subscribe();let observer=tokio::spawn(async move{loop{println!("auth/{}",state_name(&states.borrow_and_update()));if states.changed().await.is_err(){break;}}});
-        let result=async{
-            progress.stage.set(Stage::HttpsAuthentication);let credentials=match provider.login(&email,&password,cancel.clone()).await?{Some(c)=>c,None=>{
-                progress.stage.set(Stage::DeviceRegistrationApproval);if !ui::registration_approval(cancel.clone()).await.map_err(|_|fail("registration approval cancelled, timed out or unavailable"))?{return Err(fail("device registration not approved"));}
-                provider.approve_device_registration()?;progress.completed(Stage::DeviceRegistrationApproval);progress.stage.set(Stage::DeviceChallenge);let challenge=provider.request_challenge(&email,&password,cancel.clone()).await?;
-                ui::show_challenge(challenge.expose_code()).map_err(|_|fail("cannot display approval code privately"))?;drop(challenge);
-                progress.stage.set(Stage::DeviceConfirmation);provider.confirm_device(&email,&password,cancel.clone()).await?;
-                progress.stage.set(Stage::PostRegistrationLogin);provider.login(&email,&password,cancel.clone()).await?.ok_or_else(||fail("device approval incomplete"))?
-            }};
-            progress.completed(Stage::HttpsAuthentication);
-            drop(password);drop(email);
-            let credentials=if args.refresh{progress.stage.set(Stage::ExplicitRefresh);let next=provider.refresh(&credentials,cancel.clone()).await?;drop(credentials);next}else{credentials};
-            if !credentials.has_server_expiration(){println!("Using an explicit local credential-age cap; server expiry was absent.");}
-            let profile=provider.loco_profile();let device=Zeroizing::new(provider.device_uuid().to_owned());let token=credentials.protocol_token()?;drop(credentials);drop(provider);
-            let options=Options{booking,booking_schema:BookingSchema::AgentMessenger,checkin:Protection::LocoGcm(key.clone()),chat:Protection::LocoGcm(key),tls:TlsSettings::with_roots(trust),transport:Config::default(),stage_timeout:Duration::from_secs(15),total_timeout:Duration::from_secs(60),session_lease:Duration::from_secs(300)};
-            let mut session=options.connect(&profile,token,&device,cancel.clone(),|phase,endpoint|{progress.protocol_enter(phase);println!("protocol/{}",progress.stage.get().label());route.dial(endpoint,cancel.clone())}).await?;drop(device);
-            progress.completed(Stage::Loginlist);println!("LIVE LOGINLIST acknowledged; configured account identity validated for this run.");
-            let operation=async{if args.read_only{progress.stage.set(Stage::RoomPage);let page=session.chat_rooms(Cursor::default()).await?;println!("Read-only page received: {} rooms; eof={}. No personal room data recorded.",page.rooms.len(),page.eof);}
+    let message = args.send_one.map(|_| prepared.test_message()).transpose()?;
+    let approval = prepared.permit_terminal(progress, selected, false)?;
+    runtime.block_on(async {
+        let (signal, cancel) = signal_channel()?;
+        let result = async {
+            let authorized = prepared.authorize(approval, args.refresh, progress, cancel.clone()).await?;
+            let mut session = authorized.connect(progress, cancel.clone()).await?;
+            let operation = async {
+                if args.read_only {
+                    progress.stage.set(Stage::RoomPage);
+                    let page = session.chat_rooms(Cursor::default()).await?;
+                    println!("Read-only page received: {} rooms; eof={}.", page.rooms.len(), page.eof);
+                }
                 if args.room_info {
-                    let room = test_room.ok_or_else(|| fail("missing authorized test room"))?;
+                    let room = room.ok_or_else(|| fail("missing authorized test room"))?;
                     progress.stage.set(Stage::RoomSelection);
                     let info = session.room_info(room).await.map_err(validation::Error::Room)?;
                     progress.completed(Stage::RoomSelection);
@@ -604,49 +445,58 @@ fn attempt(args: &Arguments, progress: &Progress) -> Result<(), Failure> {
                         None => println!("Room access verified. Active member count unavailable."),
                     }
                 }
-                if let Some(seconds)=args.listen {
+                if let Some(seconds) = args.listen {
                     progress.stage.set(Stage::MessageReception);
-                    let mut events=session.message_events()?;
-                    let until=tokio::time::Instant::now()+Duration::from_secs(seconds);
-                    let (mut messages,mut unknown,mut malformed)=(0_u64,0_u64,0_u64);
-                    loop { tokio::select! { biased;
-                        _=tokio::time::sleep_until(until)=>break,
-                        event=events.recv(cancel.clone())=>match event? {
-                            MessageEvent::Message(_)=>messages+=1,
-                            MessageEvent::Unknown(_)=>unknown+=1,
-                            MessageEvent::Malformed(_)=>malformed+=1,
+                    let mut events = session.message_events()?;
+                    let until = tokio::time::Instant::now() + Duration::from_secs(seconds);
+                    let (mut messages, mut unknown, mut malformed) = (0_u64, 0_u64, 0_u64);
+                    loop {
+                        tokio::select! { biased;
+                            _ = tokio::time::sleep_until(until) => break,
+                            event = events.recv(cancel.clone()) => match event? {
+                                MessageEvent::Message(_) => messages += 1,
+                                MessageEvent::Unknown(_) => unknown += 1,
+                                MessageEvent::Malformed(_) => malformed += 1,
+                            }
                         }
-                    }}
-                    println!("Receive window complete: messages={messages}; unknown={unknown}; malformed={malformed}. No content or identities recorded.");
+                    }
+                    println!("Receive window complete: messages={messages}; unknown={unknown}; malformed={malformed}.");
                 }
-                if let Some(seconds)=args.receive_one {
-                    let room=test_room.ok_or_else(||fail("missing authorized test room"))?;
-                    validation::receive_one(&session,room,Duration::from_secs(seconds),cancel.clone(),progress).await?;
+                if let Some(seconds) = args.receive_one {
+                    let room = room.ok_or_else(|| fail("missing authorized test room"))?;
+                    validation::receive_one(&session, room, Duration::from_secs(seconds), cancel.clone(), progress).await?;
                 }
-                if let (Some(seconds), Some(message)) = (args.send_one, message) {
-                    let room = test_room.ok_or_else(|| fail("missing authorized test room"))?;
-                    validation::send_one(&session, room, &message, Duration::from_secs(seconds), cancel.clone(), progress).await?;
-                }
-                Ok::<(),Failure>(())};
-            let read = if args.send_one.is_some() {
-                // The sender classifies post-admission cancellation as unknown.
-                operation.await
-            } else {
-                let mut read_cancel=cancel.clone();
-                tokio::select!{biased;_=ui::cancelled(&mut read_cancel)=>Err(fail("post-login validation cancelled")),result=operation=>result}
+                Ok::<(), Failure>(())
             };
-            let failure_stage=progress.stage.get();
+            let mut read_cancel = cancel.clone();
+            let read = tokio::select! { biased;
+                _ = ui::cancelled(&mut read_cancel) => Err(fail("post-login validation cancelled")),
+                result = operation => result,
+            };
+            let result = match (read, args.send_one, message) {
+                (Ok(()), Some(seconds), Some(message)) => {
+                    let room = room.ok_or_else(|| fail("missing authorized test room"))?;
+                    validation::send_one(&session, room, &message, Duration::from_secs(seconds), cancel.clone(), progress).await
+                }
+                (result, _, _) => result,
+            };
+            let failed_stage = progress.stage.get();
             progress.stage.set(Stage::Shutdown);
-            let mut shutdown_cancel=cancel.clone();
-            let closed=tokio::select!{biased;
-                _=ui::cancelled(&mut shutdown_cancel)=>Err::<(),Failure>(fail("shutdown interrupted; clean close unverified")),
-                result=session.disconnect_checked()=>result.map_err(|e|Box::new(e) as Failure),
-            };
-            if closed.is_ok(){progress.completed(Stage::Shutdown);}
-            if let Err(error)=read {progress.stage.set(failure_stage);return Err(error);}
-            closed?;progress.stage.set(Stage::Complete);println!("Checked local shutdown completed.");Ok::<(),Failure>(())
+            let closed = session.disconnect_checked().await;
+            if closed.is_ok() {
+                progress.completed(Stage::Shutdown);
+            }
+            if let Err(error) = result {
+                progress.stage.set(failed_stage);
+                return Err(error);
+            }
+            closed?;
+            progress.stage.set(Stage::Complete);
+            println!("Checked local shutdown completed.");
+            Ok(())
         }.await;
-        observer.abort();let _=observer.await;signal.abort();let _=signal.await;result
+        signal.abort();
+        result
     })
 }
 #[cfg(test)]

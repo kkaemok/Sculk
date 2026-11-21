@@ -104,6 +104,13 @@ impl fmt::Debug for DeviceIdentity {
     }
 }
 impl DeviceIdentity {
+    /// Validate and load an already approved identity without creating a file.
+    pub fn load_existing(path: &Path) -> Result<Self, Error> {
+        private_parent(path)?;
+        let bytes = read_private_file(path, 256)?;
+        Self::from_uuid(String::from_utf8(bytes.to_vec()).map_err(|_| Error::Storage)?)
+    }
+
     /// Load an existing private identity, or exclusively create a fresh 0600 file.
     /// Parent must already be a private real directory. Startup-only blocking I/O:
     /// call outside Tokio or in spawn_blocking. Never replaces an existing identity.
