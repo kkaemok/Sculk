@@ -27,6 +27,7 @@ async fn setup(replies: Vec<Packet>) -> (Session, tokio::task::JoinHandle<()>) {
     let (a, b) = tokio::io::duplex(16384);
     let peer = tokio::spawn(async move {
         let mut framed = Framed::new(acceptor.accept(b).await.unwrap(), LocoCodec::default());
+        let mut next_cursor = None;
         for mut reply in replies {
             let request = framed.next().await.unwrap().unwrap();
             assert_eq!(request.command, reply.command);
@@ -46,7 +47,22 @@ async fn setup(replies: Vec<Packet>) -> (Session, tokio::task::JoinHandle<()>) {
             normalized.id = 1;
             let mut bytes = BytesMut::new();
             LocoCodec::default().encode(normalized, &mut bytes).unwrap();
-            assert_eq!(bytes.as_ref(), expected);
+            if let ("LCHATLIST", Some((last_chat, last_token))) =
+                (request.command.as_str(), next_cursor)
+            {
+                let body = request.document().unwrap();
+                assert_eq!(body.get_i64("lastChatId").unwrap(), last_chat);
+                assert_eq!(body.get_i64("lastTokenId").unwrap(), last_token);
+            } else {
+                assert_eq!(bytes.as_ref(), expected);
+            }
+            if request.command.as_str() == "LCHATLIST" {
+                let body = reply.document().unwrap();
+                next_cursor = body
+                    .get_i64("lastChatId")
+                    .ok()
+                    .zip(body.get_i64("lastTokenId").ok());
+            }
             reply.id = request.id;
             if framed.send(reply).await.is_err() {
                 return;
@@ -86,6 +102,79 @@ async fn setup(replies: Vec<Packet>) -> (Session, tokio::task::JoinHandle<()>) {
         .await
         .unwrap();
     (session, peer)
+}
+
+#[tokio::test]
+async fn bounded_listing_requires_eof_and_preserves_exact_cursors() {
+    let first = || {
+        packet(
+            "LCHATLIST",
+            doc! {
+                "chatDatas":[{"c":ID}],"eof":false,"lastChatId":ID,"lastTokenId":-ID
+            },
+        )
+    };
+    let last = || {
+        packet(
+            "LCHATLIST",
+            doc! {"chatDatas":[{"c":ID},{"c":ID+1}],"eof":true},
+        )
+    };
+    let (mut session, peer) = setup(vec![first(), last()]).await;
+    let rooms = session.chat_rooms_bounded(2, 2).await.unwrap();
+    assert_eq!(
+        rooms.iter().map(|room| room.id.get()).collect::<Vec<_>>(),
+        [ID, ID + 1]
+    );
+    session.disconnect().await;
+    peer.await.unwrap();
+
+    let (mut session, peer) = setup(vec![first()]).await;
+    assert!(matches!(
+        session.chat_rooms_bounded(1, 2).await,
+        Err(Error::IncompleteSnapshot)
+    ));
+    session.disconnect().await;
+    peer.await.unwrap();
+}
+
+#[tokio::test]
+async fn verified_members_require_two_consistent_read_only_observations() {
+    let info = || {
+        packet(
+            "CHATINFO",
+            doc! {
+                "chatInfo":{"chatId":ID,"activeMembersCount":2,"displayMembers":[{"userId":ID+2}]}
+            },
+        )
+    };
+    let members = |first, second| {
+        packet(
+            "GETMEM",
+            doc! {
+                "chatId":ID,"token":ID+9,"members":[{"userId":first},{"userId":second}]
+            },
+        )
+    };
+    for (second, stable) in [(ID + 2, true), (ID + 4, false)] {
+        let (mut session, peer) = setup(vec![
+            info(),
+            members(ID + 2, ID + 3),
+            info(),
+            members(ID + 3, second),
+        ])
+        .await;
+        let result = session
+            .room_members_verified(RoomId::new(ID).unwrap())
+            .await;
+        if stable {
+            assert_eq!(result.unwrap().members[1].id().unwrap().get(), ID + 2);
+        } else {
+            assert!(matches!(result, Err(Error::IncompleteSnapshot)));
+        }
+        session.disconnect().await;
+        peer.await.unwrap();
+    }
 }
 #[tokio::test]
 async fn source_backed_room_page_metadata_and_members_preserve_large_ids() {

@@ -3,6 +3,7 @@
 use crate::session::Session;
 use bson::{doc, Bson, Document};
 use sculk_protocol::{Command, Packet};
+use std::collections::HashSet;
 
 /// Read-only query failure. No response payload or personal data in errors.
 #[derive(Debug, thiserror::Error)]
@@ -13,6 +14,9 @@ pub enum Error {
     /// Response omitted, duplicated or mistyped required fields, or exceeded bounds.
     #[error("invalid read-only response")]
     InvalidResponse,
+    /// The server did not establish a stable or complete result within bounds.
+    #[error("read-only snapshot changed or is incomplete")]
+    IncompleteSnapshot,
     /// Peer returned nonzero BSON status.
     #[error("read-only request rejected with status {0}")]
     Rejected(i64),
@@ -75,7 +79,7 @@ pub struct OpenLinkInfo {
     pub kind: Option<i32>,
 }
 /// Server pagination tokens. Opaque last_token_id may be signed; do not infer TTL.
-#[derive(Clone, Copy, Default, PartialEq, Eq)]
+#[derive(Clone, Copy, Default, PartialEq, Eq, Hash)]
 pub struct Cursor {
     /// Server-returned lastTokenId, exact BSON integer.
     pub last_token_id: i64,
@@ -281,6 +285,44 @@ impl Session {
         };
         Ok(ChatPage { rooms, eof, next })
     }
+
+    /// List rooms to explicit EOF within caller-provided bounds. Keeps the first
+    /// occurrence of each exact ID, preserving server order across pages.
+    /// Use the one-page API to consume partial results.
+    pub async fn chat_rooms_bounded(
+        &self,
+        max_pages: usize,
+        max_rooms: usize,
+    ) -> Result<Vec<RoomSummary>, Error> {
+        if !(1..=100).contains(&max_pages) || !(1..=4096).contains(&max_rooms) {
+            return Err(Error::InvalidRequest);
+        }
+        let mut cursor = Cursor::default();
+        let mut seen_cursors = HashSet::from([cursor]);
+        let mut seen_rooms = HashSet::new();
+        let mut rooms = Vec::new();
+        for _ in 0..max_pages {
+            let page = self.chat_rooms(cursor).await?;
+            if page.rooms.is_empty() && !page.eof {
+                return Err(Error::IncompleteSnapshot);
+            }
+            for room in page.rooms {
+                if seen_rooms.insert(room.id) {
+                    if rooms.len() == max_rooms {
+                        return Err(Error::IncompleteSnapshot);
+                    }
+                    rooms.push(room);
+                }
+            }
+            match page.next {
+                None => return Ok(rooms),
+                Some(next) if seen_cursors.insert(next) => cursor = next,
+                _ => return Err(Error::IncompleteSnapshot),
+            }
+        }
+        Err(Error::IncompleteSnapshot)
+    }
+
     /// Fetch the documented CHATINFO subset. The returned chatId must match.
     pub async fn room_info(&self, room: RoomId) -> Result<RoomInfo, Error> {
         let data = self.room_document(room).await?;
@@ -388,4 +430,54 @@ impl Session {
             token: required_number(&body, "token")?,
         })
     }
+
+    /// Read CHATINFO and GETMEM twice. Return the second GETMEM snapshot only
+    /// when both observations agree on their member IDs and active counts.
+    /// No room entry, read acknowledgment or enrollment is performed.
+    pub async fn room_members_verified(&self, room: RoomId) -> Result<Members, Error> {
+        let (first_count, first_display) = self.room_member_view(room).await?;
+        let first_members = self.room_members(room).await?;
+        let (second_count, second_display) = self.room_member_view(room).await?;
+        let second_members = self.room_members(room).await?;
+        let first_ids = unique_members(first_members.members.iter().map(|member| member.user_id))?;
+        let second_ids =
+            unique_members(second_members.members.iter().map(|member| member.user_id))?;
+        if first_count != second_count
+            || first_display != second_display
+            || first_ids != second_ids
+            || second_ids.len() != second_count as usize
+            || !second_display.is_subset(&second_ids)
+        {
+            return Err(Error::IncompleteSnapshot);
+        }
+        Ok(second_members)
+    }
+
+    async fn room_member_view(&self, room: RoomId) -> Result<(u32, HashSet<i64>), Error> {
+        let info = self.room_document(room).await?;
+        let count = count(&info, "activeMembersCount")?.ok_or(Error::InvalidResponse)?;
+        let display = if info.contains_key("displayMembers") {
+            let ids = values(&info, "displayMembers")?
+                .iter()
+                .map(|value| {
+                    let member = value.as_document().ok_or(Error::InvalidResponse)?;
+                    required_number(member, "userId")
+                })
+                .collect::<Result<Vec<_>, _>>()?;
+            unique_members(ids.into_iter())?
+        } else {
+            HashSet::new()
+        };
+        Ok((count, display))
+    }
+}
+
+fn unique_members(ids: impl Iterator<Item = i64>) -> Result<HashSet<i64>, Error> {
+    let mut seen = HashSet::new();
+    for id in ids {
+        if id <= 0 || !seen.insert(id) {
+            return Err(Error::InvalidResponse);
+        }
+    }
+    Ok(seen)
 }
