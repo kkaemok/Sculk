@@ -62,6 +62,12 @@ Optional metadata is bounded to 32 KiB per JSON string. The original
 attachment, supplement and BSON remain available when decoding fails or fields
 are unknown. Media keys, URLs and display names are untrusted content.
 
+`Event::historical_log_change()` inspects the documented desktop deletion
+and reaction push fields. It leaves the raw packet intact, preserves exact
+room/log/member IDs and reports the reaction code without assigning a reason
+or change direction. Android delivery and server mutation support remain
+unverified for these operations.
+
 ## Text request foundation
 
 ```rust
@@ -104,7 +110,7 @@ provide a durable idempotency key. [Protocol profiles](advanced-compatibility.md
 ```rust,no_run
 use sculk_client::{
     messaging::{Message, MessageBuilder, SendError, TextReceipt},
-    read_only::{OpenLinkId, RoomMemberId},
+    read_only::{MentionTarget, OpenLinkId},
     session::Session,
 };
 use tokio::sync::watch;
@@ -112,13 +118,13 @@ use tokio::sync::watch;
 async fn reply(
     session: &Session,
     source: &Message,
-    member: RoomMemberId,
+    member: &MentionTarget<'_>,
     open_link: Option<OpenLinkId>,
     cancel: watch::Receiver<bool>,
 ) -> Result<TextReceipt, SendError> {
     let message = MessageBuilder::new()
         .text("Thanks, ")
-        .mention(member, "홍길동")
+        .mention(member)
         .text("!")
         .reply_to(source, open_link)
         .build()?;
@@ -126,10 +132,12 @@ async fn reply(
 }
 ```
 
-Use a room-scoped member ID from the destination room and an independently
+Resolve the `MentionTarget` with `Members::mention_target` using a read-only
+membership observation from the destination room. Supply an independently
 verified OpenChat link when applicable. The builder rejects cross-room
 quotation and limits mention names to the BMP because the wire length of
-other names is unverified. IDs stay exact in BSON and JSON. Existing scripts
+other names is unverified. Emoji in ordinary message text remains supported.
+IDs stay exact in BSON and JSON. Existing scripts
 continue to use the same command dispatch and text outbound. Media and
 sticker sends, reactions, thread sends and rich-card composition require
 further protocol evidence and owner validation.
@@ -150,6 +158,7 @@ compatibility.
 |---|---|
 | TextReceipt | Server acknowledged a room-bound log ID and Unix-second timestamp; not recipient delivery/read |
 | NotSent | Session admission/authentication failed before submission/write |
+| Cancelled | Cancellation observed before submission |
 | Rejected(status) | Explicit nonzero status; raw integer retained |
 | TimeoutUnknown | Deadline passed after submission; never automatically resend |
 | DeliveryUnknown | Interrupted/expired connection or missing/malformed/mismatched reply; never automatically resend |
@@ -177,6 +186,18 @@ room dedicated to this test. The report records the acknowledgment bit, failure
 category and known status, with message contents and room IDs kept off stdout
 and out of the report. An unknown outcome requires manual reconciliation.
 [Authentication and routing](authentication.md).
+
+## Asset planning
+
+The Unix `sculk-client/media` feature opens regular files within an explicitly
+selected absolute asset directory. Descriptor-relative path resolution refuses
+symlinks, parent traversal and multiply linked files. Local signature checks
+recognize supported media containers and separate singles, grouped images and
+mixed sequential plans. Readers cap consumption at the validated length, and
+each plan caps files at 16 and total length at 128 MiB. Upload returns a typed
+unsupported operation. Scripts have no asset file access until the separately
+authorized media transport has a verified security and delivery contract.
+[Media evidence](advanced-compatibility.md).
 
 ## Phase 7 companion APIs
 

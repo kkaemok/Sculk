@@ -71,6 +71,16 @@ sudo /usr/local/sbin/start-sculk
 sudo journalctl -u sculk.service -f
 ~~~
 
+After editing scripts, run `sculk --config /etc/sculk/sculk.toml script check`.
+Then use `sudo systemctl reload sculk.service` and check the journal for the
+activation result. The runtime preserves the authenticated session and its
+checkpoint and write-attempt boundaries.
+
+The database upgrades version 1 counters to the version 2 schema in a private
+SQLite transaction. Keep a pre-upgrade backup if you may restore the previous
+release. Version 2 stores bounded typed variables alongside counters. Back up
+with the service stopped and restore a matching application and database copy.
+
 Use an administrator terminal for start-sculk. It asks for explicit account
 and room consent, then obtains the password without terminal echo. The staged
 credential lives in a root-private directory under /run, expires for new use

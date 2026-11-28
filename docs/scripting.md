@@ -353,6 +353,34 @@ function call can nest up to 16 frames. An infinite loop ends with a budget
 or deadline error. wait 10 milliseconds suspends the current handler
 within its cancellation and deadline limits. It schedules no detached work.
 
+## Typed command arguments and replies
+
+```text
+command greet <count: integer> <shown: boolean = true> <name: remaining-text = "친구">:
+    trigger:
+        if arg-2:
+            reply to event-message with "안녕하세요, %arg-3%! Count %arg-1%."
+```
+
+Legacy `<name>` stays a required text argument. Typed arguments accept
+`text`, `remaining-text`, `integer`, `boolean`, `duration`, `room`, `member`
+and `message`. Durations use `ms`, `s`, `m` or `h` and bind exact integer
+milliseconds. Room, member and message references validate against the
+current event and preserve exact integer values. Required arguments precede
+defaults. Text, integer and boolean defaults are explicit source literals,
+and `remaining-text` is final. Invalid values stop the command before its
+script effects. `sculk script commands` shows command metadata and
+`sculk script check --json` produces versioned diagnostics.
+
+Use a property such as `cooldown: 1000 milliseconds` to limit repeated
+invocations per room and sender. Aliases share a command's cooldown. The
+in-memory cooldown starts again when the program is replaced.
+
+Ordinary `reply` sends room text. `reply to event-message with` constructs a
+quoted WRITE and requires the current message. Live quotes share the same
+write authorization, rate policy and durable one-attempt boundary as text.
+The offline console marks mock quotes separately.
+
 ## Collections and counters
 
 text-list(...), integer-list(...) and boolean-list(...) construct
@@ -375,3 +403,46 @@ concurrent host invocations. For an atomic increment use add rather than
 read, calculate and set. An application can preserve the same counters across
 reloads through Compiler::with_globals. The CLI optionally persists them in
 SQLite. [Persistence and restart](runtime.md#persistence).
+
+### Scoped and typed state
+
+Use `{global::room::name}` to scope a counter to the current room.
+`counter-exists({global::name})` distinguishes zero from an absent counter.
+Typed state is separate from counters.
+
+```text
+command save:
+    trigger:
+        set {state::text::room::greeting} to "안녕하세요"
+        set {state::integer-list::ids} to integer-list(9223372036854775807)
+command show:
+    trigger:
+        reply state-or({state::text::room::greeting}, "없음")
+```
+
+Use `state-exists` to test for a value, `state-or` for a type-checked default,
+and `delete` to remove it. Text, integers, booleans and homogeneous lists and
+maps use the same types as locals. The shared store has 256 combined entries,
+and typed values have independent byte and collection bounds. Individual
+reads, assignments, deletions and counter increments are atomic. An enabled
+SQLite host saves typed values with counters. `break` and `continue` target
+the innermost repeat or while loop and consume the same execution budget.
+
+## Scheduled events
+
+A Rust host can dispatch explicitly room-scoped timers using
+`sculk_bot::ScheduledSource`. Scripts may handle an `on scheduled:` event
+with the bound room and the host's outbound policy. The CLI currently has no
+declarative timer configuration. The checkpointed executable does not
+schedule outbound writes outside an admitted message trigger.
+
+## Korean syntax aliases
+
+```text
+메시지를 받았을 때:
+    메시지가 "안녕"이면:
+        "안녕하세요 😀"라고 답장
+```
+
+These message, comparison and reply forms use the same compiler, type
+checker and runtime as their English equivalents in both script extensions.

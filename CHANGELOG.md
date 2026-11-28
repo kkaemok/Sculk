@@ -2,6 +2,15 @@
 
 ## Unreleased
 
+- Add explicit legacy GCM and tablet TLS Android contracts and bounded
+  transport diagnostics.
+- Compose room-bound mentions and actual quotes, inspect typed message
+  metadata, and plan media assets with descriptor-relative path checks.
+- Add partial room and member results, scoped member caches and blocklists,
+  and a multi-room Rust session adapter.
+- Add typed script arguments, quote effects, typed persistent state, scheduled
+  event handlers, JSON compiler diagnostics, and live script reload.
+- Update `url` and `form_urlencoded` after the November 28 RustSec review.
 - Add a Unix executable live path with owner-gated authentication, exact command
   validation, bounded room recovery and durable write-attempt checkpoints.
 - Add independent DNS/TCP and CONNECT preflight, stage reports, shared device

@@ -167,6 +167,13 @@ The owner CLI also supports a separately confirmed --send-one operation.
 Reconcile ambiguous outcomes before any further attempt.
 [Messaging and verification](docs/messaging.md).
 
+The Rust SDK also provides a bounded room and member API, a room-scoped
+member cache, a local blocklist and a multi-room adapter. The executable adds
+typed command arguments, versioned JSON diagnostics, private typed SQLite
+state and atomic live script reload. Media preparation is available offline
+through the optional Unix feature. [Bot framework](docs/bot.md) ·
+[Runtime](docs/runtime.md) · [Script syntax](docs/scripting.md).
+
 ```sh
 cargo test -p sculk-client --all-features --test messaging --locked
 cargo bench -p sculk-client --all-features --bench events --locked

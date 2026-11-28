@@ -1,5 +1,31 @@
 # Bot framework (Phase 9)
 
+`SessionSource::select_rooms` takes ownership of one authenticated session and
+verifies up to 16 explicitly authorized rooms through read-only CHATINFO.
+`scoped_outbound` grants a subset individual room intervals and one shared
+account interval. The adapter preserves arrival order within each room and
+reports overflow explicitly. The executable's checkpointed recovery serves
+one room. The Rust adapter uses a shared arrival queue.
+
+`Blocklist` filters dispatch for matching room/member pairs and holds at most
+4,096 entries. Set `blocked_members = [42]` in the corresponding `[[rooms]]`
+section. A local block leaves the user's OpenChat membership and native lists
+intact.
+
+`Schedule` and `ScheduledSource` run up to 128 monotonic timers for explicitly
+listed rooms, using the existing event source. Repeating timers skip missed
+intervals. Shutdown clears timers. A Rust host can compose a schedule with an
+authorized source and separately granted outbound adapter.
+[Script scheduled events](scripting.md).
+
+Use `Session::list_rooms` for cancellable bounded pagination with a typed
+partial result, `room_details` for read-only metadata and read state, and
+`room_member_snapshot` for complete or partial membership results.
+`sculk_client::members::Cache` stores a bounded, expiring display snapshot
+keyed by exact room and member IDs. A validated NEWMEM or DELMEM observation
+can invalidate one room by calling `observe`. Re-fetch membership before
+using updated display data. The cache conveys no verified permissions.
+
 `sculk-bot` implements offline-tested Rust event and command dispatch above
 `sculk-client`. It provides adapters for explicitly authenticated sessions and offline events.
 Protocol, transport, chat/history and authentication remain in the existing crates.

@@ -1,5 +1,31 @@
 # Sculk runtime
 
+Use `sculk script check --json` for stable compiler diagnostics and
+`sculk script commands` for names, aliases, prefixes and argument types.
+These commands are offline. The authenticated Unix runner accepts SIGHUP to
+compile a replacement from its configured script directory on a blocking
+worker. Activation is between events and shares the existing stored state and
+connection. A failed compilation or registration keeps the prior program.
+For services, use `systemctl reload sculk.service` and inspect the journal for
+`scripts-reloaded` or `script-reload-rejected`. Scope and connection settings
+are fixed for the lifetime of the runner.
+
+The optional owner probe exposes bounded transport diagnostics:
+
+```sh
+sculk protocol status /private/auth.json
+sculk protocol monitor /private/auth.json --listen 20
+sculk protocol stats /private/auth.json
+```
+
+Status performs local configuration validation. Monitor and stats go through
+the ordinary interactive account gate and report after the requested probe.
+Trace records contain local request correlation, allowlisted command names,
+timing, sizes, queue depths and transport outcome. Unknown command names are
+masked. Bodies are never retained and diagnostic consumers cannot block the
+network actor. A reported transport acknowledgment may still fail application
+status or receipt validation.
+
 Build or install the executable from the repository with a stable Rust toolchain.
 
 ~~~sh

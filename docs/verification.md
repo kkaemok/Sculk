@@ -1,5 +1,63 @@
 # Verification record
 
+## Advanced SDK and runtime — 2026-11-28
+
+Verified locally on x86-64 GNU/Linux with Rust 1.100.0. The baseline for this
+development round was `ff170b4dbb9e8d836ff2132eaefbffaa1092ceca`.
+
+| Check | Result |
+| --- | --- |
+| Locked default and all-feature workspace tests | 153 default, 230 all-feature passed |
+| Formatting, all-target all-feature Clippy and Git whitespace checks | Passed |
+| Locked all-feature release build and rustdoc with warnings denied | Passed |
+| Local encrypted peer | Tablet TLS identity and downgrade refusal, quote/mention submission, ambiguous acknowledgment, reconnect, two authorized rooms on one SDK session and shared account limits |
+| Read-only SDK and event validation | Exact IDs and cursors, partial snapshots, TTL and room isolation, current read-state fields, raw historical event preservation |
+| Executable regression | Failed reload keeps prior dispatch, schema v1 migration preserves integers, typed state survives restart with room isolation, exact Unicode command and quote output |
+| Unix deployment files | Static `systemd-analyze verify` using a staged unit with the local release binary path |
+| Decoder, script and addon fuzzing | Nightly AddressSanitizer, 5,000 executions per target without a crash. Decoder coverage includes optional message and event metadata access |
+| RustSec | Both lockfiles audited against database `3eebb903ba6c43f60c57dc0e15fa61eef06231d1`. No advisories or warnings after updating `url` to 2.5.9 for RUSTSEC-2026-0592 |
+
+```sh
+cargo fmt --all -- --check
+cargo clippy --workspace --all-targets --all-features --locked -- -D warnings
+cargo test --workspace --locked
+cargo test --workspace --all-features --locked
+cargo build --workspace --release --all-features --locked
+RUSTDOCFLAGS="-D warnings" cargo doc --workspace --all-features --no-deps --locked
+cargo check --manifest-path fuzz/Cargo.toml --locked
+cargo bench --workspace --all-features --locked
+cargo audit
+cargo audit --file fuzz/Cargo.lock
+```
+
+The x86-64 workspace benchmark covered the local transport, offline dispatch,
+allocation counts, bounded history and checkpoint saves. The new 100,000-iteration
+microbenchmarks measured about 4.1–5.7 μs for typed MSG plus metadata, 2.4–3.9 μs
+for quote and mention construction, and 32–37 ns for a scoped cache lookup.
+The idle encrypted peer measured about 3.8 MiB process RSS after five seconds.
+These are local measurements. [Performance](performance.md).
+
+On the same host and filesystem, the equivalent 2,000-command baseline and
+updated SQLite workloads took 0.198 s and 0.104 s with per-command commits,
+and 0.022 s each with `commit_every = 32`. Each run checked the persisted
+counter after restart. These single trials are sensitive to host scheduling
+and filesystem behavior. [Storage benchmark](performance.md).
+
+KakaoTalk login, media transfer, native OpenChat moderation, an Oracle VM
+startup and a 24-hour soak remain unverified. The executable currently has a
+single-room durable live runner. Multi-room selection and rate limits are
+available as an SDK adapter, and local scheduled events use Rust-owned timers.
+The GitHub Actions API returned Forbidden for the native architecture workflow,
+so this round has no AArch64 runtime or benchmark result.
+[Owner checks and protocol limits](advanced-compatibility.md).
+
+Remaining engineering work includes durable multi-room checkpoints in the
+executable, fair per-room admission and queued write deadlines, declarative
+CLI timers with a durable admission boundary, and server-role-aware script and
+addon capabilities. Media preparation, read-only metadata, Rust-owned
+scheduled events and the scoped SDK adapter are usable independently of those
+runtime extensions.
+
 ## Android tablet and typed messaging — 2026-11-28
 
 Baseline `ff170b4dbb9e8d836ff2132eaefbffaa1092ceca`. Checks ran on
