@@ -10,6 +10,7 @@ repository.workspace = true
 sculk-bot.workspace = true
 tokio.workspace = true
 thiserror.workspace = true
+serde = { version = "1", features = ["derive", "rc"] }
 
 [dev-dependencies]
 sculk-protocol.workspace = true

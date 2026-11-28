@@ -1,11 +1,11 @@
 use crate::addon::{AddonContext, AddonError, CallGuard, Capability, Entry, Implementation, Meter};
 use crate::{
-    ast::{Binary, Value},
+    ast::{ArgumentKind, ArgumentSpec, Binary, ReplyKind, Value},
     compiler::{Expression, Function, Operation},
     Collection, CompiledScripts, GlobalCounters, Limits, Span,
 };
 use sculk_bot::{Context, OutboundError};
-use std::{fmt::Write, sync::Arc, time::Duration};
+use std::{borrow::Cow, fmt::Write, sync::Arc, time::Duration};
 use tokio::time::Instant;
 
 /// Runtime failures contain no text, private identifiers or adapter internals.
@@ -25,6 +25,8 @@ pub enum RuntimeError {
     RepeatCount,
     #[error("script counter storage unavailable or full")]
     State,
+    #[error("typed state variable has no stored value")]
+    StateUnset,
     #[error("script wait duration outside 0..=30000 milliseconds")]
     WaitDuration,
     #[error("collection index or key absent")]
@@ -37,6 +39,8 @@ pub enum RuntimeError {
     Context,
     #[error("required command argument is missing")]
     Argument,
+    #[error("invalid value for command argument {0}")]
+    ArgumentValue(usize),
     #[error("script permission denied")]
     Permission,
     #[error("invalid compiled handler or execution state")]
@@ -92,6 +96,75 @@ pub struct Execution {
     pub replies: usize,
     pub stopped: bool,
 }
+
+fn bind_arguments(
+    specs: &[ArgumentSpec],
+    ctx: &Context,
+    limits: &Limits,
+) -> Result<Vec<Value>, RuntimeError> {
+    let mut available = ctx.arguments();
+    let mut values = Vec::with_capacity(specs.len());
+    for (index, spec) in specs.iter().enumerate() {
+        let Some(first) = available.next() else {
+            values.push(spec.default.clone().ok_or(RuntimeError::Argument)?);
+            continue;
+        };
+        let parsed = match spec.kind {
+            ArgumentKind::Text => Some(Value::String(first.into())),
+            ArgumentKind::RemainingText => {
+                let mut text = first.to_owned();
+                for part in available.by_ref() {
+                    text.push(' ');
+                    text.push_str(part);
+                }
+                Some(Value::String(text.into()))
+            }
+            ArgumentKind::Integer => first.parse().ok().map(Value::Integer),
+            ArgumentKind::Boolean => first.parse().ok().map(Value::Boolean),
+            ArgumentKind::Duration => duration_ms(first).map(Value::Integer),
+            ArgumentKind::Room => scoped_argument(first, ctx.room().map(|room| room.get())),
+            ArgumentKind::Member => scoped_argument(first, ctx.sender().map(|sender| sender.get())),
+            ArgumentKind::Message => {
+                scoped_argument(first, ctx.message().map(|message| message.id.get()))
+            }
+        }
+        .ok_or(RuntimeError::ArgumentValue(index + 1))?;
+        if parsed
+            .as_string()
+            .is_some_and(|value| value.len() > limits.string_bytes)
+        {
+            return Err(RuntimeError::StringLimit);
+        }
+        values.push(parsed);
+    }
+    Ok(values)
+}
+
+fn scoped_argument(text: &str, allowed: Option<i64>) -> Option<Value> {
+    let exact = text.parse::<i64>().ok()?;
+    (Some(exact) == allowed).then_some(Value::Integer(exact))
+}
+
+fn duration_ms(text: &str) -> Option<i64> {
+    for (unit, multiplier) in [("ms", 1), ("s", 1000), ("m", 60_000), ("h", 3_600_000)] {
+        if let Some(value) = text.strip_suffix(unit) {
+            let number = value.parse::<i64>().ok()?.checked_mul(multiplier)?;
+            return (number >= 0).then_some(number);
+        }
+    }
+    None
+}
+
+fn counter_key<'a>(name: &'a str, ctx: &Context) -> Result<Cow<'a, str>, RuntimeError> {
+    match name.strip_prefix("room::") {
+        Some(name) => {
+            let room = ctx.room().ok_or(RuntimeError::Context)?;
+            Ok(Cow::Owned(format!("room::{}::{name}", room.get())))
+        }
+        None => Ok(Cow::Borrowed(name)),
+    }
+}
+
 struct Budget<'a> {
     ctx: &'a Context,
     limits: &'a Limits,
@@ -102,6 +175,7 @@ struct Budget<'a> {
     functions: &'a [Function],
     globals: &'a GlobalCounters,
     call_depth: usize,
+    arguments: Vec<Value>,
 }
 impl Budget<'_> {
     fn used(&self) -> usize {
@@ -343,8 +417,42 @@ fn eval<'a>(
         Expression::Sender => {
             ResultValue::Integer(ctx.sender().ok_or(RuntimeError::Context)?.get())
         }
-        Expression::Global(name) => {
-            ResultValue::Integer(budget.globals.get(name).map_err(|_| RuntimeError::State)?)
+        Expression::Global(name) => ResultValue::Integer(
+            budget
+                .globals
+                .get(&counter_key(name, ctx)?)
+                .map_err(|_| RuntimeError::State)?,
+        ),
+        Expression::CounterExists(name) => ResultValue::Boolean(
+            budget
+                .globals
+                .contains(&counter_key(name, ctx)?)
+                .map_err(|_| RuntimeError::State)?,
+        ),
+        Expression::State(name, ty) => from_owned(
+            budget
+                .globals
+                .get_state(&counter_key(name, ctx)?, *ty)
+                .map_err(|_| RuntimeError::State)?
+                .ok_or(RuntimeError::StateUnset)?,
+        ),
+        Expression::StateExists(name, ty) => ResultValue::Boolean(
+            budget
+                .globals
+                .get_state(&counter_key(name, ctx)?, *ty)
+                .map_err(|_| RuntimeError::State)?
+                .is_some(),
+        ),
+        Expression::StateOr(name, ty, fallback) => {
+            if let Some(value) = budget
+                .globals
+                .get_state(&counter_key(name, ctx)?, *ty)
+                .map_err(|_| RuntimeError::State)?
+            {
+                from_owned(value)
+            } else {
+                eval(fallback, ctx, locals, budget)?
+            }
         }
         Expression::MessageId => {
             ResultValue::Integer(ctx.message().ok_or(RuntimeError::Context)?.id.get())
@@ -360,9 +468,13 @@ fn eval<'a>(
             ResultValue::Integer(ctx.message().ok_or(RuntimeError::Context)?.sent_at_seconds)
         }
         Expression::Room => ResultValue::Integer(ctx.room().ok_or(RuntimeError::Context)?.get()),
-        Expression::Argument(index) => ResultValue::String(Text::Borrowed(
-            ctx.arguments().nth(*index).ok_or(RuntimeError::Argument)?,
-        )),
+        Expression::Argument(index) => from_owned(
+            budget
+                .arguments
+                .get(*index)
+                .cloned()
+                .ok_or(RuntimeError::Argument)?,
+        ),
         Expression::Local(slot) => from_value(
             locals
                 .get(*slot)
@@ -444,7 +556,7 @@ enum Action<'a> {
     Advance,
     Stop,
     Return(Option<Value>),
-    Reply(&'a Expression),
+    Reply(&'a Expression, ReplyKind),
     Wait(Duration),
     Addon(&'a Entry, &'a [Expression]),
 }
@@ -466,7 +578,7 @@ impl Frame {
         let ctx = budget.ctx;
         let limits = budget.limits;
         match operation {
-            Operation::Reply(expr) => return Ok(Action::Reply(expr)),
+            Operation::Reply(expr, kind) => return Ok(Action::Reply(expr, *kind)),
             Operation::Addon(entry, args) => return Ok(Action::Addon(entry, args)),
             Operation::Stop => return Ok(Action::Stop),
             Operation::Return(expr) => {
@@ -482,7 +594,7 @@ impl Frame {
             }
             Operation::UpdateGlobal(name, expr, add) => {
                 let value = eval(expr, ctx, &self.locals, budget)?.integer()?;
-                budget.globals.update(name, |old| {
+                budget.globals.update(&counter_key(name, ctx)?, |old| {
                     if *add {
                         old.checked_add(value).ok_or(RuntimeError::Arithmetic)
                     } else {
@@ -492,8 +604,21 @@ impl Frame {
             }
             Operation::DeleteGlobal(name) => budget
                 .globals
-                .delete(name)
+                .delete(&counter_key(name, ctx)?)
                 .map_err(|_| RuntimeError::State)?,
+            Operation::SetState(name, expr) => {
+                let value = eval(expr, ctx, &self.locals, budget)?.owned(limits)?;
+                budget
+                    .globals
+                    .set_state(&counter_key(name, ctx)?, value)
+                    .map_err(|_| RuntimeError::State)?;
+            }
+            Operation::DeleteState(name, ty) => {
+                budget
+                    .globals
+                    .delete_state(&counter_key(name, ctx)?, *ty)
+                    .map_err(|_| RuntimeError::State)?;
+            }
             Operation::Wait(expr) => {
                 let milliseconds = eval(expr, ctx, &self.locals, budget)?.integer()?;
                 if !(0..=30000).contains(&milliseconds) {
@@ -581,14 +706,14 @@ impl CompiledScripts {
                 error,
                 span: Some(handler.span),
             };
-            if let Some(command) = &handler.command {
-                if ctx.arguments().count() < command.required {
-                    return Err(fail(RuntimeError::Argument));
-                }
+            let arguments = if let Some(command) = &handler.command {
                 if command.permissions.iter().any(|p| !ctx.has_permission(p)) {
                     return Err(fail(RuntimeError::Permission));
                 }
-            }
+                bind_arguments(&command.arguments, ctx, limits).map_err(fail)?
+            } else {
+                Vec::new()
+            };
             let mut budget = Budget {
                 ctx,
                 limits,
@@ -599,6 +724,7 @@ impl CompiledScripts {
                 functions: &self.0.functions,
                 globals: &self.0.globals,
                 call_depth: 0,
+                arguments,
             };
             if let Some(event) = &handler.event_addon {
                 let accepted = budget
@@ -648,14 +774,16 @@ impl CompiledScripts {
                         budget.charge(0).map_err(failure)?;
                         result.map_err(|e| failure(e.into()))?;
                     }
-                    Action::Reply(e) => {
+                    Action::Reply(e, kind) => {
                         let value = eval(e, ctx, &frame.locals, &mut budget).map_err(failure)?;
                         let ResultValue::String(text) = value else {
                             return Err(failure(RuntimeError::Invalid));
                         };
-                        ctx.reply(&text)
-                            .await
-                            .map_err(|e| failure(RuntimeError::Outbound(e)))?;
+                        let reply = match kind {
+                            ReplyKind::Room => ctx.reply(&text).await,
+                            ReplyKind::Quote => ctx.quote_reply(&text).await,
+                        };
+                        reply.map_err(|e| failure(RuntimeError::Outbound(e)))?;
                         execution.replies += 1;
                     }
                     Action::Stop => {

@@ -27,7 +27,11 @@ use std::{
     sync::Arc,
     time::Duration,
 };
-use tokio::{sync::watch, time::Instant};
+use tokio::{
+    signal::unix::{signal, Signal, SignalKind},
+    sync::watch,
+    time::Instant,
+};
 
 const HEARTBEAT: Duration = Duration::from_secs(30);
 const VALIDATION_WINDOW: Duration = Duration::from_secs(90);
@@ -155,13 +159,22 @@ fn execute(
         .enable_all()
         .build()?;
     runtime.block_on(async {
-        let (signal, cancel) = signal_channel()?;
+        let (shutdown_signal, cancel) = signal_channel()?;
+        let reload = if trigger.is_none() {
+            Some(Reload {
+                signal: signal(SignalKind::hangup())?,
+                config: host.config.clone(),
+                directory: host.directory.to_path_buf(),
+            })
+        } else {
+            None
+        };
         let result = async {
             let authorized = prepared
                 .authorize(approval, options.refresh, progress, cancel.clone())
                 .await?;
             let manager = Room::new(room, 512, managed::Budget::default(), &state.staged)?;
-            Runner::new(
+            let mut runner = Runner::new(
                 bot,
                 manager,
                 state,
@@ -169,12 +182,14 @@ fn execute(
                 cancel.clone(),
                 trigger,
                 writes.then(|| Duration::from_secs(live.write_interval_seconds)),
-            )
-            .run(|| authorized.connect(progress, cancel.clone()))
-            .await
+            );
+            runner.reload = reload;
+            runner
+                .run(|| authorized.connect(progress, cancel.clone()))
+                .await
         }
         .await;
-        signal.abort();
+        shutdown_signal.abort();
         result
     })
 }
@@ -256,6 +271,22 @@ struct Runner<'a> {
     interval: Option<Duration>,
     echoes: VecDeque<MessageId>,
     health: Health,
+    reload: Option<Reload>,
+}
+
+struct Reload {
+    signal: Signal,
+    config: crate::config::Configuration,
+    directory: PathBuf,
+}
+
+async fn hangup(reload: &mut Option<Reload>) {
+    if let Some(reload) = reload {
+        if reload.signal.recv().await.is_some() {
+            return;
+        }
+    }
+    std::future::pending().await
 }
 
 impl<'a> Runner<'a> {
@@ -278,6 +309,7 @@ impl<'a> Runner<'a> {
             interval,
             echoes: VecDeque::new(),
             health: Health::default(),
+            reload: None,
         }
     }
 
@@ -525,6 +557,12 @@ impl<'a> Runner<'a> {
             let event = tokio::select! { biased;
                 _ = wait_cancel(&mut cancel) => return Ok(Next::Stop),
                 _ = until(deadline) => return Err(RuntimeError::ValidationTimeout.into()),
+                _ = hangup(&mut self.reload) => {
+                    if let Some(reload) = &self.reload {
+                        self.reload_scripts(reload.config.clone(), reload.directory.clone()).await;
+                    }
+                    continue;
+                },
                 _ = tokio::time::sleep_until(*heartbeat) => {
                     match self.room.heartbeat(self.cancel.clone()).await {
                         Ok(()) => {
@@ -585,6 +623,25 @@ impl<'a> Runner<'a> {
                 continue;
             }
             return Ok(Next::Message(message));
+        }
+    }
+
+    async fn reload_scripts(&mut self, config: crate::config::Configuration, directory: PathBuf) {
+        let counters = self.state.counters.clone();
+        let replacement = tokio::task::spawn_blocking(move || {
+            Host {
+                config,
+                directory: &directory,
+            }
+            .compile(counters)
+            .map(|(bot, _)| bot)
+        })
+        .await;
+        if let Ok(Ok(bot)) = replacement {
+            self.bot = bot;
+            self.health("scripts-reloaded");
+        } else {
+            self.health("script-reload-rejected");
         }
     }
 

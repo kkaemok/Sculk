@@ -161,6 +161,134 @@ fn program(milliseconds: u64) -> Bot {
 }
 
 #[tokio::test]
+async fn live_reload_replaces_valid_program_and_rolls_back_invalid_changes() {
+    let (_stop, cancel) = watch::channel(false);
+    let root = tempfile::tempdir().unwrap();
+    let scripts = root.path().join("scripts");
+    std::fs::create_dir(&scripts).unwrap();
+    let script = scripts.join("reload.sc");
+    let id = RoomId::new(ROOM).unwrap();
+    let state = State::probe(id);
+    let room = Room::new(id, 32, managed::Budget::default(), &state.staged).unwrap();
+    let progress = Progress::default();
+    let mut runner = Runner::new(program(1000), room, state, &progress, cancel, None, None);
+    let event = |text| {
+        Event::Message(Message::from_packet(packet(0, "MSG", doc! {
+        "chatId":ROOM,"chatLog":{"logId":9_i64,"authorId":10_i64,"type":1,"sendAt":1_i64,"message":text}
+    })).unwrap())
+    };
+    assert_eq!(
+        runner
+            .dispatch_event(event("!ping"))
+            .await
+            .unwrap()
+            .commands,
+        1
+    );
+    std::fs::write(&script, "command fresh:\n    trigger:\n        stop\n").unwrap();
+    runner
+        .reload_scripts(crate::config::Configuration::default(), root.path().into())
+        .await;
+    assert_eq!(
+        runner
+            .dispatch_event(event("!fresh"))
+            .await
+            .unwrap()
+            .commands,
+        1
+    );
+    std::fs::write(&script, "command BROKEN").unwrap();
+    runner
+        .reload_scripts(crate::config::Configuration::default(), root.path().into())
+        .await;
+    assert_eq!(
+        runner
+            .dispatch_event(event("!fresh"))
+            .await
+            .unwrap()
+            .commands,
+        1
+    );
+    assert_eq!(
+        runner
+            .dispatch_event(event("!ping"))
+            .await
+            .unwrap()
+            .commands,
+        0
+    );
+    assert_eq!(runner.room.generation(), 0);
+}
+
+#[tokio::test]
+async fn one_session_routes_only_authorized_rooms_and_shares_outbound_limits() {
+    use sculk_bot::{EventSource, Outbound, SessionSource};
+    let (_stop, cancel) = watch::channel(false);
+    let (session, mut peer) = connect_pair(cancel.clone(), Duration::from_secs(20)).await;
+    let rooms = [RoomId::new(ROOM).unwrap(), RoomId::new(ROOM + 1).unwrap()];
+    let (source, ()) = tokio::join!(
+        SessionSource::select_rooms(session, &rooms, cancel.clone()),
+        async {
+            for room in rooms {
+                let request = receive(&mut peer, "CHATINFO").await;
+                assert_eq!(
+                    request.document().unwrap().get_i64("chatId").unwrap(),
+                    room.get()
+                );
+                peer.send(packet(
+                    request.id,
+                    "CHATINFO",
+                    doc! {"chatInfo":{"chatId":room.get()}},
+                ))
+                .await
+                .unwrap();
+            }
+        }
+    );
+    let mut source = source.unwrap();
+    let gateway = source
+        .scoped_outbound(
+            &rooms.map(|room| (room, Duration::from_secs(60))),
+            Duration::from_secs(60),
+        )
+        .unwrap();
+    assert!(matches!(
+        source.recv(cancel.clone()).await.unwrap(),
+        Some(Event::Connection(_))
+    ));
+    for (room, log) in [(ROOM, 1_i64), (ROOM + 2, 2), (ROOM + 1, 3), (ROOM, 4)] {
+        peer.send(packet(0, "MSG", doc! {
+            "chatId":room, "chatLog":{"logId":log,"authorId":42_i64,"type":1,"message":"test","sendAt":1_i64}
+        })).await.unwrap();
+    }
+    for (room, id) in [(ROOM, 1_i64), (ROOM + 1, 3), (ROOM, 4)] {
+        let Event::Message(message) = source.recv(cancel.clone()).await.unwrap().unwrap() else {
+            panic!("message expected")
+        };
+        assert_eq!((message.room.get(), message.id.get()), (room, id));
+    }
+    let (receipt, ()) = tokio::join!(gateway.send(rooms[0], "ok", cancel.clone()), async {
+        let write = receive(&mut peer, "WRITE").await;
+        peer.send(packet(
+            write.id,
+            "WRITE",
+            doc! {"chatId":ROOM,"logId":5_i64,"sendAt":1_i64},
+        ))
+        .await
+        .unwrap();
+    });
+    assert!(matches!(
+        receipt,
+        Ok(sculk_bot::OutboundReceipt::ServerAcknowledged(_))
+    ));
+    assert_eq!(
+        gateway.send(rooms[1], "limited", cancel).await.unwrap_err(),
+        OutboundError::NotSent
+    );
+    source.shutdown().await.unwrap();
+}
+
+#[tokio::test]
 async fn recovers_via_the_real_runner_reconciles_history_and_suppresses_duplicates_and_echoes() {
     let (stop, cancel) = watch::channel(false);
     let (first, mut lost) = connect_pair(cancel.clone(), Duration::from_secs(20)).await;

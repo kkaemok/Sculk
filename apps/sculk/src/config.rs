@@ -11,7 +11,7 @@ use std::{
 
 const CONFIG_BYTES: u64 = 65_536;
 
-#[derive(Deserialize, Default)]
+#[derive(Clone, Deserialize, Default)]
 #[serde(default, deny_unknown_fields)]
 pub struct Configuration {
     pub bot: BotSettings,
@@ -22,7 +22,7 @@ pub struct Configuration {
     pub rooms: Vec<RoomSettings>,
 }
 
-#[derive(Deserialize)]
+#[derive(Clone, Deserialize)]
 #[serde(default, deny_unknown_fields)]
 pub struct BotSettings {
     pub scripts: PathBuf,
@@ -44,7 +44,7 @@ impl Default for BotSettings {
     }
 }
 
-#[derive(Deserialize)]
+#[derive(Clone, Deserialize)]
 #[serde(default, deny_unknown_fields)]
 pub struct LimitsSettings {
     pub event_capacity: usize,
@@ -59,7 +59,7 @@ impl Default for LimitsSettings {
     }
 }
 
-#[derive(Deserialize)]
+#[derive(Clone, Deserialize)]
 #[serde(default, deny_unknown_fields)]
 pub struct StorageSettings {
     pub enabled: bool,
@@ -76,7 +76,7 @@ impl Default for StorageSettings {
     }
 }
 
-#[derive(Deserialize)]
+#[derive(Clone, Deserialize)]
 #[serde(default, deny_unknown_fields)]
 pub struct LiveSettings {
     #[cfg_attr(not(all(unix, feature = "live-validation")), allow(dead_code))]
@@ -96,7 +96,7 @@ impl Default for LiveSettings {
     }
 }
 
-#[derive(Deserialize)]
+#[derive(Clone, Deserialize)]
 #[serde(deny_unknown_fields)]
 pub struct Permission {
     pub name: String,
@@ -106,7 +106,7 @@ pub struct Permission {
     pub rules: Vec<Rule>,
 }
 
-#[derive(Deserialize)]
+#[derive(Clone, Deserialize)]
 #[serde(deny_unknown_fields)]
 pub struct Rule {
     pub sender: i64,
@@ -114,12 +114,14 @@ pub struct Rule {
     pub grant: bool,
 }
 
-#[derive(Deserialize)]
+#[derive(Clone, Deserialize)]
 #[serde(deny_unknown_fields)]
 pub struct RoomSettings {
     pub id: i64,
     #[serde(default)]
     pub prefixes: Vec<String>,
+    #[serde(default)]
+    pub blocked_members: Vec<i64>,
 }
 
 impl Configuration {
@@ -190,6 +192,16 @@ impl Configuration {
             }
         }
         bot.permission_store(Arc::new(store));
+        let mut blocklist = sculk_bot::Blocklist::default();
+        for room in &self.rooms {
+            let room_id = RoomId::new(room.id)?;
+            for &member in &room.blocked_members {
+                if !blocklist.insert(room_id, sculk_bot::RoomMemberId::new(member)?)? {
+                    return Err("duplicate local room blocklist member".into());
+                }
+            }
+        }
+        bot.blocklist(blocklist);
         Ok(())
     }
 }

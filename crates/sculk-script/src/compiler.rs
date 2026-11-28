@@ -1,7 +1,9 @@
 use crate::addon::{Capability, Entry, Registry, SyntaxId};
 use crate::collections::Builtin;
 use crate::{
-    ast::{self, Binary, Declaration, ExprKind, StatementKind, Type, Value},
+    ast::{
+        self, ArgumentKind, ArgumentSpec, Binary, Declaration, ExprKind, StatementKind, Type, Value,
+    },
     lexer, parser, Category, Diagnostic, Diagnostics, GlobalCounters, Limits, Source, Span,
 };
 use sculk_bot::{Bot, Command, EventKind, PermissionId, RegistrationError};
@@ -21,6 +23,10 @@ pub(crate) enum Expression {
     Argument(usize),
     Local(usize),
     Global(Arc<str>),
+    CounterExists(Arc<str>),
+    State(Arc<str>, Type),
+    StateExists(Arc<str>, Type),
+    StateOr(Arc<str>, Type, Box<Expression>),
     MessageId,
     MessageType,
     SentAt,
@@ -35,10 +41,12 @@ pub(crate) enum Expression {
     Addon(Arc<Entry>, Vec<Expression>),
 }
 pub(crate) enum Operation {
-    Reply(Expression),
+    Reply(Expression, ast::ReplyKind),
     Set(usize, Expression),
     UpdateGlobal(Arc<str>, Expression, bool),
     DeleteGlobal(Arc<str>),
+    SetState(Arc<str>, Expression),
+    DeleteState(Arc<str>, Type),
     Wait(Expression),
     FalseJump(Expression, usize),
     Jump(usize),
@@ -58,7 +66,7 @@ pub(crate) struct CommandSpec {
     pub aliases: Vec<String>,
     pub prefixes: Vec<String>,
     pub permissions: Vec<PermissionId>,
-    pub required: usize,
+    pub arguments: Vec<ArgumentSpec>,
 }
 pub(crate) struct Handler {
     pub filename: Arc<str>,
@@ -96,6 +104,13 @@ pub struct HandlerInfo<'a> {
     pub event: EventKind,
     pub command: Option<&'a str>,
 }
+/// Compiled command metadata for help and completion.
+pub struct CommandInfo<'a> {
+    pub name: &'a str,
+    pub prefixes: &'a [String],
+    pub aliases: &'a [String],
+    pub arguments: &'a [ArgumentSpec],
+}
 /// Immutable compiled bundle. Cloning shares instructions, never reparses source.
 #[derive(Clone)]
 pub struct CompiledScripts(pub(crate) Arc<Program>);
@@ -108,6 +123,18 @@ impl std::fmt::Debug for CompiledScripts {
     }
 }
 impl CompiledScripts {
+    pub fn commands(&self) -> impl Iterator<Item = CommandInfo<'_>> {
+        self.0.handlers.iter().filter_map(|handler| {
+            let command = handler.command.as_ref()?;
+            Some(CommandInfo {
+                name: &command.name,
+                prefixes: &command.prefixes,
+                aliases: &command.aliases,
+                arguments: &command.arguments,
+            })
+        })
+    }
+
     pub fn instruction_count(&self) -> usize {
         self.0.units
     }
@@ -503,14 +530,33 @@ impl Compiler {
                             d.push(span, Category::Limit, "command metadata limit exceeded");
                         }
                         let mut args = HashSet::new();
-                        for arg in &arguments {
-                            if !sculk_bot::valid_command_name(arg) || !args.insert(arg) {
+                        let mut optional_seen = false;
+                        for (index, arg) in arguments.iter().enumerate() {
+                            if !sculk_bot::valid_command_name(&arg.name) || !args.insert(&arg.name)
+                            {
                                 d.push(
                                     span,
                                     Category::Command,
                                     "invalid or duplicate argument name",
                                 );
                             }
+                            if optional_seen && !arg.optional() {
+                                d.push(
+                                    span,
+                                    Category::Command,
+                                    "required arguments must precede defaults",
+                                );
+                            }
+                            if arg.kind == ArgumentKind::RemainingText
+                                && index + 1 != arguments.len()
+                            {
+                                d.push(
+                                    span,
+                                    Category::Command,
+                                    "remaining-text must be the last argument",
+                                );
+                            }
+                            optional_seen |= arg.optional();
                         }
                         for prefix in &actual {
                             prefix_set.insert(prefix.clone());
@@ -547,7 +593,7 @@ impl Compiler {
                                 aliases,
                                 prefixes: actual,
                                 permissions: ids,
-                                required: arguments.len(),
+                                arguments,
                             }),
                             None,
                         )
@@ -562,7 +608,12 @@ impl Compiler {
                     kind,
                     functions: &signatures,
                     return_type: None,
-                    arguments: spec.as_ref().map(|s| s.required),
+                    arguments: spec.as_ref().map(|s| {
+                        s.arguments
+                            .iter()
+                            .map(|arg| arg.kind.value_type())
+                            .collect()
+                    }),
                     units: &mut units,
                     registry: &self.registry,
                     capabilities: &self.capabilities,
@@ -657,7 +708,7 @@ struct Semantic<'a, 'b> {
     repeat_slots: usize,
     code: Vec<Instruction>,
     kind: EventKind,
-    arguments: Option<usize>,
+    arguments: Option<Vec<Type>>,
     functions: &'a HashMap<String, Signature>,
     return_type: Option<Option<Type>>,
     units: &'a mut usize,
@@ -785,16 +836,27 @@ impl Semantic<'_, '_> {
                 break;
             }
             match &statement.kind {
-                StatementKind::Reply(e) => {
-                    if !matches!(self.kind, EventKind::Message | EventKind::Synchronization) {
+                StatementKind::Reply(e, kind) => {
+                    let available = match kind {
+                        ast::ReplyKind::Room => {
+                            matches!(
+                                self.kind,
+                                EventKind::Message
+                                    | EventKind::Synchronization
+                                    | EventKind::Scheduled
+                            )
+                        }
+                        ast::ReplyKind::Quote => self.kind == EventKind::Message,
+                    };
+                    if !available {
                         self.d.push(
                             span,
                             Category::Type,
-                            "messaging effect requires a current room",
+                            "messaging effect requires its current room or message context",
                         );
                     }
                     if let Some((e, Type::String)) = self.expr(e, 1) {
-                        self.emit(span, Operation::Reply(e));
+                        self.emit(span, Operation::Reply(e, *kind));
                     } else {
                         self.d.push(
                             span,
@@ -819,6 +881,23 @@ impl Semantic<'_, '_> {
                 }
                 StatementKind::DeleteGlobal(name) => {
                     self.emit(span, Operation::DeleteGlobal(name.as_str().into()))
+                }
+                StatementKind::SetState(name, ty, value) => {
+                    let Some((value, actual)) = self.expr(value, 1) else {
+                        continue;
+                    };
+                    if actual == *ty {
+                        self.emit(span, Operation::SetState(name.as_str().into(), value));
+                    } else {
+                        self.d.push(
+                            span,
+                            Category::Type,
+                            "state assignment must match declared type",
+                        );
+                    }
+                }
+                StatementKind::DeleteState(name, ty) => {
+                    self.emit(span, Operation::DeleteState(name.as_str().into(), *ty))
                 }
                 StatementKind::Wait(value) => {
                     if self.return_type.is_some() {
@@ -1005,6 +1084,7 @@ impl Semantic<'_, '_> {
                 (Expression::Literal(value.clone()), value.ty())
             }
             ExprKind::Global(name) => (Expression::Global(name.as_str().into()), Type::Integer),
+            ExprKind::State(name, ty) => (Expression::State(name.as_str().into(), *ty), *ty),
             ExprKind::Local(name) => {
                 let Some((slot, ty)) = self.bindings.get(name) else {
                     self.d.push(
@@ -1035,7 +1115,10 @@ impl Semantic<'_, '_> {
                     (Expression::Sender, Type::Integer)
                 }
                 "room" | "room-id" | "event-room"
-                    if matches!(self.kind, EventKind::Message | EventKind::Synchronization) =>
+                    if matches!(
+                        self.kind,
+                        EventKind::Message | EventKind::Synchronization | EventKind::Scheduled
+                    ) =>
                 {
                     (Expression::Room, Type::Integer)
                 }
@@ -1044,15 +1127,18 @@ impl Semantic<'_, '_> {
                         .strip_prefix("arg-")
                         .and_then(|n| n.parse::<usize>().ok())
                     {
-                        if arg == 0 || self.arguments.is_none_or(|count| arg > count) {
+                        let ty = arg
+                            .checked_sub(1)
+                            .and_then(|index| self.arguments.as_ref()?.get(index).copied());
+                        let Some(ty) = ty else {
                             self.d.push(
                                 span,
                                 Category::Scope,
                                 "argument must be declared in this command header",
                             );
                             return None;
-                        }
-                        (Expression::Argument(arg - 1), Type::String)
+                        };
+                        (Expression::Argument(arg - 1), ty)
                     } else {
                         self.d.push(
                             span,
@@ -1093,6 +1179,63 @@ impl Semantic<'_, '_> {
                 )
             }
             ExprKind::Call(name, arguments) => {
+                if matches!(name.as_str(), "state-exists" | "state-or") {
+                    let [ast::Expr {
+                        kind: ExprKind::State(key, ty),
+                        ..
+                    }, rest @ ..] = arguments.as_slice()
+                    else {
+                        self.d
+                            .push(span, Category::Type, "expected a typed state variable");
+                        return None;
+                    };
+                    match (name.as_str(), rest) {
+                        ("state-exists", []) => {
+                            return Some((
+                                Expression::StateExists(key.as_str().into(), *ty),
+                                Type::Boolean,
+                            ))
+                        }
+                        ("state-or", [fallback]) => {
+                            let (fallback, actual) = self.expr(fallback, depth + 1)?;
+                            if actual == *ty {
+                                return Some((
+                                    Expression::StateOr(
+                                        key.as_str().into(),
+                                        *ty,
+                                        Box::new(fallback),
+                                    ),
+                                    *ty,
+                                ));
+                            }
+                        }
+                        _ => {}
+                    }
+                    self.d.push(
+                        span,
+                        Category::Type,
+                        "state default must match the declared type",
+                    );
+                    return None;
+                }
+                if name == "counter-exists" {
+                    let [ast::Expr {
+                        kind: ExprKind::Global(counter),
+                        ..
+                    }] = arguments.as_slice()
+                    else {
+                        self.d.push(
+                            span,
+                            Category::Type,
+                            "counter-exists requires a global counter",
+                        );
+                        return None;
+                    };
+                    return Some((
+                        Expression::CounterExists(counter.as_str().into()),
+                        Type::Boolean,
+                    ));
+                }
                 if let Some(builtin) = Builtin::named(name) {
                     let mut compiled = Vec::with_capacity(arguments.len());
                     let mut types = Vec::with_capacity(arguments.len());

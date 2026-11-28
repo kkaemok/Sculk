@@ -20,10 +20,10 @@ mod globals;
 mod lexer;
 mod parser;
 mod runtime;
-pub use ast::{Type, Value};
+pub use ast::{ArgumentKind, ArgumentSpec, Type, Value};
 pub use collections::{Collection, Scalar};
-pub use compiler::{CompiledScripts, Compiler, HandlerInfo};
-pub use globals::{CounterError, GlobalCounters};
+pub use compiler::{CommandInfo, CompiledScripts, Compiler, HandlerInfo};
+pub use globals::{CounterError, GlobalCounters, StoredState};
 pub use runtime::{Execution, ExecutionError, RuntimeDiagnostic, RuntimeError};
 use std::{fmt, path::Path, time::Duration};
 
@@ -63,6 +63,22 @@ pub enum Category {
     Limit,
     Addon,
     Capability,
+}
+impl Category {
+    pub fn code(self) -> &'static str {
+        match self {
+            Self::Loading => "loading",
+            Self::Lexical => "lexical",
+            Self::Syntax => "syntax",
+            Self::Type => "type",
+            Self::Scope => "scope",
+            Self::Command => "command",
+            Self::Unsupported => "unsupported",
+            Self::Limit => "limit",
+            Self::Addon => "addon",
+            Self::Capability => "capability",
+        }
+    }
 }
 /// Bounded compiler diagnostic. Source excerpts require explicit caller action.
 #[derive(Clone, Debug, PartialEq, Eq)]

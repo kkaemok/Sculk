@@ -4,7 +4,8 @@ use std::{collections::BTreeMap, sync::Arc};
 const CAPACITY: usize = 128;
 
 /// Element type of a homogeneous list or string-keyed map.
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+#[derive(Clone, Copy, Debug, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
+#[serde(rename_all = "kebab-case")]
 pub enum Scalar {
     Text,
     Integer,
@@ -21,17 +22,39 @@ impl Scalar {
 }
 
 /// An immutable, cheaply cloned list or map. Script updates return a new value.
-#[derive(Clone, PartialEq, Eq)]
+#[derive(Clone, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
+#[serde(deny_unknown_fields)]
 pub struct Collection {
     scalar: Scalar,
     items: Items,
 }
-#[derive(Clone, PartialEq, Eq)]
+#[derive(Clone, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
+#[serde(rename_all = "kebab-case")]
 enum Items {
     List(Arc<[Value]>),
     Map(Arc<BTreeMap<Arc<str>, Value>>),
 }
 impl Collection {
+    pub(crate) fn storage_size(&self) -> Option<usize> {
+        if self.len() > CAPACITY {
+            return None;
+        }
+        let size = |value: &Value| {
+            if value.ty() != self.scalar.ty() {
+                return None;
+            }
+            crate::globals::value_size(value)
+        };
+        match &self.items {
+            Items::List(items) => items
+                .iter()
+                .try_fold(0, |total, value| Some(total + size(value)?)),
+            Items::Map(items) => items.iter().try_fold(0, |total, (key, value)| {
+                (key.len() <= 256).then_some(total + key.len() + size(value)?)
+            }),
+        }
+        .map(|total| total + 32)
+    }
     pub(crate) fn ty(&self) -> Type {
         match self.items {
             Items::List(_) => Type::List(self.scalar),

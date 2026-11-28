@@ -8,7 +8,24 @@ pub enum Type {
     List(Scalar),
     Map(Scalar),
 }
-#[derive(Clone, PartialEq, Eq)]
+impl Type {
+    pub(crate) fn named(name: &str) -> Option<Self> {
+        Some(match name {
+            "text" | "string" => Self::String,
+            "integer" => Self::Integer,
+            "boolean" => Self::Boolean,
+            "text-list" => Self::List(Scalar::Text),
+            "integer-list" => Self::List(Scalar::Integer),
+            "boolean-list" => Self::List(Scalar::Boolean),
+            "text-map" => Self::Map(Scalar::Text),
+            "integer-map" => Self::Map(Scalar::Integer),
+            "boolean-map" => Self::Map(Scalar::Boolean),
+            _ => return None,
+        })
+    }
+}
+#[derive(Clone, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
+#[serde(rename_all = "kebab-case")]
 pub enum Value {
     String(std::sync::Arc<str>),
     Integer(i64),
@@ -51,6 +68,42 @@ impl std::fmt::Debug for Value {
         f.debug_tuple("Value").field(&self.ty()).finish()
     }
 }
+
+/// Validated source command argument interpretation.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum ArgumentKind {
+    Text,
+    RemainingText,
+    Integer,
+    Boolean,
+    Duration,
+    Room,
+    Member,
+    Message,
+}
+
+impl ArgumentKind {
+    pub(crate) fn value_type(self) -> Type {
+        match self {
+            Self::Text | Self::RemainingText => Type::String,
+            Self::Boolean => Type::Boolean,
+            _ => Type::Integer,
+        }
+    }
+}
+
+#[derive(Debug)]
+pub struct ArgumentSpec {
+    pub name: String,
+    pub kind: ArgumentKind,
+    pub(crate) default: Option<Value>,
+}
+
+impl ArgumentSpec {
+    pub fn optional(&self) -> bool {
+        self.default.is_some()
+    }
+}
 #[derive(Debug)]
 pub struct Expr {
     pub kind: ExprKind,
@@ -78,6 +131,7 @@ pub enum ExprKind {
     Name(String),
     Local(String),
     Global(String),
+    State(String, Type),
     Template(Vec<Expr>),
     Equal(Box<Expr>, Box<Expr>, bool),
     Binary(Binary, Box<Expr>, Box<Expr>),
@@ -94,10 +148,12 @@ pub struct Statement {
 }
 #[derive(Debug)]
 pub enum StatementKind {
-    Reply(Expr),
+    Reply(Expr, ReplyKind),
     Set(String, Expr),
     UpdateGlobal(String, Expr, bool),
     DeleteGlobal(String),
+    SetState(String, Type, Expr),
+    DeleteState(String, Type),
     Wait(Expr),
     Stop,
     Return(Option<Expr>),
@@ -106,6 +162,12 @@ pub enum StatementKind {
     While(Expr, Vec<Statement>),
     If(Expr, Vec<Statement>, Vec<Statement>),
     Addon(crate::addon::SyntaxId, Vec<Expr>),
+}
+
+#[derive(Clone, Copy, Debug)]
+pub enum ReplyKind {
+    Room,
+    Quote,
 }
 #[derive(Debug)]
 pub enum Declaration {
@@ -125,7 +187,7 @@ pub enum Declaration {
     Command {
         name: String,
         explicit: Option<String>,
-        arguments: Vec<String>,
+        arguments: Vec<ArgumentSpec>,
         prefixes: Option<Vec<String>>,
         aliases: Vec<String>,
         permissions: Vec<String>,

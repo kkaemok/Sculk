@@ -9,6 +9,7 @@ User=sculk
 Group=sculk
 WorkingDirectory=/etc/sculk
 ExecStart=/usr/local/bin/sculk --config /etc/sculk/sculk.toml run --live-service /etc/sculk/private/auth.json
+ExecReload=/bin/kill -HUP $MAINPID
 LoadCredential=sculk-approval:/run/sculk-operator/approval
 # PID 1 has copied the single-use input before the service process starts.
 ExecStartPost=+/usr/bin/rm -f -- /run/sculk-operator/approval

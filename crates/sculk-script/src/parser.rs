@@ -141,6 +141,7 @@ pub fn parse(lines: &[Line], d: &mut Diagnostics<'_>, registry: &Registry) -> Sc
                         "synchronization" => Some(sculk_bot::EventKind::Synchronization),
                         "unknown" => Some(sculk_bot::EventKind::Unknown),
                         "lag" => Some(sculk_bot::EventKind::Lagged),
+                        "scheduled" => Some(sculk_bot::EventKind::Scheduled),
                         _ => None,
                     },
                     _ => None,
@@ -205,17 +206,8 @@ pub fn parse(lines: &[Line], d: &mut Diagnostics<'_>, registry: &Registry) -> Sc
 }
 fn scalar_type(token: &Token, d: &mut Diagnostics<'_>) -> Option<Type> {
     if let Kind::Word(name) = &token.kind {
-        match name.as_str() {
-            "text" | "string" => return Some(Type::String),
-            "integer" => return Some(Type::Integer),
-            "boolean" => return Some(Type::Boolean),
-            "text-list" => return Some(Type::List(crate::Scalar::Text)),
-            "integer-list" => return Some(Type::List(crate::Scalar::Integer)),
-            "boolean-list" => return Some(Type::List(crate::Scalar::Boolean)),
-            "text-map" => return Some(Type::Map(crate::Scalar::Text)),
-            "integer-map" => return Some(Type::Map(crate::Scalar::Integer)),
-            "boolean-map" => return Some(Type::Map(crate::Scalar::Boolean)),
-            _ => {}
+        if let Some(ty) = Type::named(name) {
+            return Some(ty);
         }
     }
     d.push(
@@ -349,17 +341,17 @@ impl Parser<'_, '_, '_> {
         let name = name.clone();
         let mut arguments = Vec::new();
         while i < t.len() - 1 {
-            if i + 2 >= t.len() - 1
-                || !matches!(t[i].kind, Kind::Left)
-                || !matches!(t[i + 2].kind, Kind::Right)
-            {
-                return fail(self.d, t[i].span, "required arguments use <name>");
-            }
-            let Kind::Word(arg) = &t[i + 1].kind else {
-                return fail(self.d, t[i + 1].span, "expected a positional argument name");
+            let end = t[i..t.len() - 1]
+                .iter()
+                .position(|token| matches!(token.kind, Kind::Right));
+            let Some(end) = end.map(|offset| i + offset) else {
+                return fail(self.d, t[i].span, "expected an argument enclosed in < >");
             };
-            arguments.push(arg.clone());
-            i += 3;
+            if !matches!(t[i].kind, Kind::Left) {
+                return fail(self.d, t[i].span, "expected an argument enclosed in < >");
+            }
+            arguments.push(argument(&t[i + 1..end], t[i].span, self.d)?);
+            i = end + 1;
         }
         let mut prefixes = None;
         let mut aliases = None;
@@ -484,19 +476,31 @@ impl Parser<'_, '_, '_> {
             } else if word(&t[0], "call") {
                 expression(&t[1..], self.d, 1, span, self.registry).map(StatementKind::Call)
             } else if word(&t[0], "reply") {
-                expression(&t[1..], self.d, 1, span, self.registry).map(StatementKind::Reply)
+                let (value, kind) = if t
+                    .get(1..4)
+                    .is_some_and(|head| words(head, &["to", "event-message", "with"]))
+                {
+                    (&t[4..], ReplyKind::Quote)
+                } else {
+                    (&t[1..], ReplyKind::Room)
+                };
+                expression(value, self.d, 1, span, self.registry)
+                    .map(|expr| StatementKind::Reply(expr, kind))
             } else if word(&t[0], "send")
                 && t.len() >= 4
                 && words(&t[t.len() - 2..], &["to", "event-room"])
             {
                 expression(&t[1..t.len() - 2], self.d, 1, span, self.registry)
-                    .map(StatementKind::Reply)
+                    .map(|expr| StatementKind::Reply(expr, ReplyKind::Room))
             } else if word(&t[0], "set") && t.len() >= 4 && word(&t[2], "to") {
                 let value = expression(&t[3..], self.d, 1, span, self.registry);
                 match &t[1].kind {
                     Kind::Local(name) => value.map(|e| StatementKind::Set(name.clone(), e)),
                     Kind::Global(name) => {
                         value.map(|e| StatementKind::UpdateGlobal(name.clone(), e, false))
+                    }
+                    Kind::State(name, ty) => {
+                        value.map(|expr| StatementKind::SetState(name.clone(), *ty, expr))
                     }
                     _ => fail(
                         self.d,
@@ -512,8 +516,16 @@ impl Parser<'_, '_, '_> {
                 expression(&t[1..t.len() - 2], self.d, 1, span, self.registry)
                     .zip(global)
                     .map(|(value, name)| StatementKind::UpdateGlobal(name.clone(), value, true))
-            } else if word(&t[0], "delete") && t.len() == 2 && global.is_some() {
-                global.cloned().map(StatementKind::DeleteGlobal)
+            } else if word(&t[0], "delete") && t.len() == 2 {
+                match &t[1].kind {
+                    Kind::Global(name) => Some(StatementKind::DeleteGlobal(name.clone())),
+                    Kind::State(name, ty) => Some(StatementKind::DeleteState(name.clone(), *ty)),
+                    _ => fail(
+                        self.d,
+                        span,
+                        "delete requires a global counter or a state variable",
+                    ),
+                }
             } else if word(&t[0], "wait") && t.len() >= 3 && word(&t[t.len() - 1], "milliseconds") {
                 expression(&t[1..t.len() - 1], self.d, 1, span, self.registry)
                     .map(StatementKind::Wait)
@@ -599,6 +611,69 @@ impl Parser<'_, '_, '_> {
         }
         condition.map(|condition| StatementKind::If(condition, yes, no))
     }
+}
+
+fn argument(tokens: &[Token], span: Span, d: &mut Diagnostics<'_>) -> Option<ArgumentSpec> {
+    let [Token {
+        kind: Kind::Word(name),
+        ..
+    }, rest @ ..] = tokens
+    else {
+        return fail(d, span, "expected a positional argument name");
+    };
+    let (kind, default) = match rest {
+        [] => (ArgumentKind::Text, None),
+        [separator, Token {
+            kind: Kind::Word(ty),
+            ..
+        }, tail @ ..]
+            if colon(separator) =>
+        {
+            let kind = match ty.as_str() {
+                "text" | "string" => ArgumentKind::Text,
+                "remaining-text" => ArgumentKind::RemainingText,
+                "integer" => ArgumentKind::Integer,
+                "boolean" => ArgumentKind::Boolean,
+                "duration" => ArgumentKind::Duration,
+                "room" => ArgumentKind::Room,
+                "member" => ArgumentKind::Member,
+                "message" => ArgumentKind::Message,
+                _ => return fail(d, span, "unknown command argument type"),
+            };
+            let default = match tail {
+                [] => None,
+                [equals, value] if matches!(equals.kind, Kind::Symbol('=')) => {
+                    Some(match (&value.kind, kind) {
+                        (Kind::String(_), ArgumentKind::Text | ArgumentKind::RemainingText) => {
+                            Value::String(string(value, d)?.into())
+                        }
+                        (Kind::Integer(value), ArgumentKind::Integer) => Value::Integer(*value),
+                        _ if kind == ArgumentKind::Boolean && word(value, "true") => {
+                            Value::Boolean(true)
+                        }
+                        _ if kind == ArgumentKind::Boolean && word(value, "false") => {
+                            Value::Boolean(false)
+                        }
+                        _ => {
+                            return fail(
+                                d,
+                                span,
+                                "expected a literal text, integer or boolean default",
+                            )
+                        }
+                    })
+                }
+                _ => return fail(d, span, "expected <name: type> or <name: type = literal>"),
+            };
+            (kind, default)
+        }
+        _ => return fail(d, span, "expected <name> or <name: type>"),
+    };
+    Some(ArgumentSpec {
+        name: name.clone(),
+        kind,
+        default,
+    })
 }
 pub fn expression(
     tokens: &[Token],
@@ -872,6 +947,7 @@ impl Expression<'_, '_, '_> {
             Kind::Integer(n) => ExprKind::Literal(Value::Integer(*n)),
             Kind::Local(name) => ExprKind::Local(name.clone()),
             Kind::Global(name) => ExprKind::Global(name.clone()),
+            Kind::State(name, ty) => ExprKind::State(name.clone(), *ty),
             Kind::Word(w) if w == "true" || w == "false" => {
                 ExprKind::Literal(Value::Boolean(w == "true"))
             }

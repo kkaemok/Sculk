@@ -1,5 +1,6 @@
 use sculk_bot::{
-    BoxFuture, MessageId, Outbound, OutboundError, OutboundReceipt, RoomId, SessionOutbound,
+    BoxFuture, MessageId, Outbound, OutboundError, OutboundReceipt, OutgoingMessage, RoomId,
+    SessionOutbound,
 };
 use std::sync::{Arc, Mutex};
 use tokio::sync::watch;
@@ -35,6 +36,33 @@ impl OneWrite {
             .map(|outcome| *outcome)
             .unwrap_or(Outcome::Unknown)
     }
+
+    async fn attempt(
+        &self,
+        request: BoxFuture<'_, Result<OutboundReceipt, OutboundError>>,
+    ) -> Result<OutboundReceipt, OutboundError> {
+        {
+            let mut outcome = self.outcome.lock().map_err(|_| OutboundError::NotSent)?;
+            if *outcome != Outcome::Unused {
+                return Err(OutboundError::NotSent);
+            }
+            *outcome = Outcome::Pending;
+        }
+        let result = request.await;
+        let observed = match &result {
+            Ok(OutboundReceipt::ServerAcknowledged(receipt)) => Outcome::Acknowledged(receipt.id),
+            Err(OutboundError::Rejected(status)) => Outcome::Rejected(*status),
+            Err(OutboundError::NotSent | OutboundError::Unavailable | OutboundError::Cancelled) => {
+                Outcome::NotSubmitted
+            }
+            _ => Outcome::Unknown,
+        };
+        *self
+            .outcome
+            .lock()
+            .map_err(|_| OutboundError::DeliveryUnknown)? = observed;
+        result
+    }
 }
 
 impl Outbound for OneWrite {
@@ -44,29 +72,16 @@ impl Outbound for OneWrite {
         text: &'a str,
         cancel: watch::Receiver<bool>,
     ) -> BoxFuture<'a, Result<OutboundReceipt, OutboundError>> {
-        Box::pin(async move {
-            {
-                let mut outcome = self.outcome.lock().map_err(|_| OutboundError::NotSent)?;
-                if *outcome != Outcome::Unused {
-                    return Err(OutboundError::NotSent);
-                }
-                *outcome = Outcome::Pending;
-            }
-            let result = self.adapter.send(room, text, cancel).await;
-            let observed = match &result {
-                Ok(OutboundReceipt::ServerAcknowledged(receipt)) => {
-                    Outcome::Acknowledged(receipt.id)
-                }
-                Err(OutboundError::Rejected(status)) => Outcome::Rejected(*status),
-                Err(OutboundError::NotSent | OutboundError::Unavailable) => Outcome::NotSubmitted,
-                _ => Outcome::Unknown,
-            };
-            *self
-                .outcome
-                .lock()
-                .map_err(|_| OutboundError::DeliveryUnknown)? = observed;
-            result
-        })
+        Box::pin(self.attempt(self.adapter.send(room, text, cancel)))
+    }
+
+    fn send_message<'a>(
+        &'a self,
+        room: RoomId,
+        message: &'a OutgoingMessage,
+        cancel: watch::Receiver<bool>,
+    ) -> BoxFuture<'a, Result<OutboundReceipt, OutboundError>> {
+        Box::pin(self.attempt(self.adapter.send_message(room, message, cancel)))
     }
 }
 

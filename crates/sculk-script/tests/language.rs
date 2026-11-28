@@ -73,6 +73,37 @@ async fn run(
     let errors = errors.lock().unwrap().clone();
     (sent, report, errors)
 }
+
+#[tokio::test]
+async fn command_arguments_validate_integer_boolean_duration_and_room_before_effects() {
+    let p = compile(
+        r#"
+command count <value: integer> <enabled: boolean> <delay: duration> <here: room> <label: remaining-text = "기본">:
+    trigger:
+        if arg-2 and arg-3 is 2000:
+            reply "%arg-1%:%arg-4%:%arg-5%"
+"#,
+    );
+    assert_eq!(p.commands().next().unwrap().arguments.len(), 5);
+    let (sent, _, errors) = run(
+        &p,
+        &[
+            "!count 9223372036854775807 true 2s 9223372036854775807",
+            "!count 7 true 2s 9223372036854775807 \"한글😀\" 별칭",
+            "!count 7 true 2s 9223372036854775806",
+            "!count 1e6 true 2s 9223372036854775807",
+        ],
+    )
+    .await;
+    assert_eq!(
+        sent,
+        [
+            "9223372036854775807:9223372036854775807:기본",
+            "7:9223372036854775807:한글😀 별칭"
+        ]
+    );
+    assert_eq!(errors.len(), 2);
+}
 #[tokio::test]
 async fn both_extensions_compile_and_execute_identically() {
     let text = "on message:\n    if message is \"안녕\":\n        reply \"안녕하세요!\"\n";

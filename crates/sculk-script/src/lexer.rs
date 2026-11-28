@@ -11,6 +11,7 @@ pub enum Kind {
     String(Vec<Piece>),
     Local(String),
     Global(String),
+    State(String, crate::Type),
     Colon,
     Comma,
     Left,
@@ -71,9 +72,16 @@ pub fn tokens(text: &str, base: Span, d: &mut Diagnostics<'_>) -> Vec<Token> {
                 i += end + 1;
                 if let Some(name) = name
                     .strip_prefix("global::")
-                    .filter(|name| crate::globals::valid_name(name))
+                    .filter(|name| crate::globals::valid_script_name(name))
                 {
                     Kind::Global(name.into())
+                } else if let Some((ty, key)) = name
+                    .strip_prefix("state::")
+                    .and_then(|name| name.split_once("::"))
+                    .and_then(|(name, key)| crate::Type::named(name).map(|ty| (ty, key)))
+                    .filter(|(_, key)| crate::globals::valid_script_name(key))
+                {
+                    Kind::State(key.into(), ty)
                 } else if name.starts_with('_')
                     && (2..=64).contains(&name.len())
                     && name.chars().all(|c| c.is_alphanumeric() || c == '_')

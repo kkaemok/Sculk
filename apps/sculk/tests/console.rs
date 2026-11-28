@@ -100,6 +100,70 @@ fn sqlite_survives_restart_and_refuses_corruption() {
     assert!(!run(root, b"!count\n").status.success());
 }
 
+#[cfg(unix)]
+#[test]
+fn sqlite_migrates_legacy_counters_and_restores_exact_typed_state_per_room() {
+    use std::os::unix::fs::{DirBuilderExt, OpenOptionsExt};
+    let directory = tempfile::tempdir().unwrap();
+    let root = directory.path();
+    assert!(command(root).arg("init").status().unwrap().success());
+    fs::write(
+        root.join("sculk.toml"),
+        "[storage]\nenabled = true\n[[rooms]]\nid = 1\n[[rooms]]\nid = 2\n",
+    )
+    .unwrap();
+    fs::DirBuilder::new()
+        .mode(0o700)
+        .create(root.join("data"))
+        .unwrap();
+    let db = root.join("data/sculk.db");
+    fs::OpenOptions::new()
+        .create_new(true)
+        .write(true)
+        .mode(0o600)
+        .open(&db)
+        .unwrap();
+    let database = rusqlite::Connection::open(&db).unwrap();
+    database
+        .execute_batch(
+            "CREATE TABLE counters (name TEXT PRIMARY KEY NOT NULL, value INTEGER NOT NULL) STRICT;
+        INSERT INTO counters VALUES ('fixture', 42);
+        PRAGMA user_version=1;",
+        )
+        .unwrap();
+    drop(database);
+    fs::write(
+        root.join("scripts/state.sc"),
+        r#"
+command store:
+    trigger:
+        set {state::text::room::greeting} to "한글 😀"
+        set {state::integer-list::values} to integer-list(9223372036854775807)
+        set {state::boolean-map::flags} to put(boolean-map(), "valid", true)
+command state:
+    trigger:
+        if get({state::boolean-map::flags}, "valid"):
+            set {_greeting} to state-or({state::text::room::greeting}, "missing")
+            set {_value} to item({state::integer-list::values}, 0)
+            reply "%{_greeting}%:%{_value}%:%{global::fixture}%"
+"#,
+    )
+    .unwrap();
+    let written = run(root, b"!store\n");
+    assert!(written.status.success(), "{written:?}");
+    let restored = run(root, b"!state\n:room 2\n!state\n");
+    assert!(restored.status.success(), "{restored:?}");
+    let restored = String::from_utf8(restored.stdout).unwrap();
+    assert!(
+        restored.contains("Bot (mock): 한글 😀:9223372036854775807:42"),
+        "{restored}"
+    );
+    assert!(
+        restored.contains("Bot (mock): missing:9223372036854775807:42"),
+        "{restored}"
+    );
+}
+
 #[test]
 fn room_prefix_and_permission_rules_share_the_script_command_registry() {
     let directory = tempfile::tempdir().unwrap();

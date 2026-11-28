@@ -21,6 +21,7 @@ impl Storage {
 mod unix {
     use super::*;
     use rusqlite::{params, Connection, OpenFlags};
+    use sculk_script::StoredState;
     use std::{
         fs::{DirBuilder, File, OpenOptions},
         os::unix::fs::{DirBuilderExt, MetadataExt, OpenOptionsExt},
@@ -29,10 +30,12 @@ mod unix {
 
     const COUNTERS_SCHEMA: &str =
         "CREATE TABLE counters (name TEXT PRIMARY KEY NOT NULL, value INTEGER NOT NULL) STRICT";
+    const VARIABLES_SCHEMA: &str =
+        "CREATE TABLE variables (name TEXT PRIMARY KEY NOT NULL, value BLOB NOT NULL) STRICT";
 
     pub struct Storage {
         connection: Connection,
-        prior: Vec<(String, i64)>,
+        prior: StoredState,
         _lock: File,
     }
 
@@ -117,30 +120,52 @@ mod unix {
                     }
                     let tx = connection.transaction()?;
                     tx.execute(COUNTERS_SCHEMA, [])?;
-                    tx.pragma_update(None, "user_version", 1)?;
+                    tx.execute(VARIABLES_SCHEMA, [])?;
+                    tx.pragma_update(None, "user_version", 2)?;
                     tx.commit()?;
                 }
-                1 => {}
+                1 => {
+                    verify_tables(&connection, false)?;
+                    let tx = connection.transaction()?;
+                    tx.execute(VARIABLES_SCHEMA, [])?;
+                    tx.pragma_update(None, "user_version", 2)?;
+                    tx.commit()?;
+                }
+                2 => {}
                 _ => return Err("unsupported state database version".into()),
             }
-            let unexpected: u32 = connection.query_row(
-                "SELECT COUNT(*) FROM sqlite_schema WHERE sql IS NOT NULL AND
-                 NOT (type = 'table' AND name = 'counters' AND sql = ?1)",
-                [COUNTERS_SCHEMA],
-                |row| row.get(0),
-            )?;
-            if unexpected != 0 {
-                return Err("unexpected objects in the state database schema".into());
-            }
+            verify_tables(&connection, true)?;
             let counters = {
                 let mut stmt = connection
                     .prepare("SELECT name, value FROM counters ORDER BY name LIMIT 257")?;
                 let entries = stmt
                     .query_map([], |row| Ok((row.get(0)?, row.get(1)?)))?
                     .collect::<rusqlite::Result<Vec<(String, i64)>>>()?;
-                GlobalCounters::from_snapshot(entries)?
+                entries
             };
-            let prior = counters.snapshot()?;
+            let variables = {
+                let mut statement = connection
+                    .prepare("SELECT name, value FROM variables ORDER BY name LIMIT 257")?;
+                let entries = statement.query_map([], |row| {
+                    Ok((row.get::<_, String>(0)?, row.get::<_, Vec<u8>>(1)?))
+                })?;
+                entries
+                    .map(|entry| -> crate::Result<_> {
+                        let (name, bytes) = entry?;
+                        if bytes.len() > 128 * 1024 {
+                            return Err("stored variable exceeds its encoding limit".into());
+                        }
+                        let value = serde_json::from_slice(&bytes)
+                            .map_err(|_| "invalid stored variable encoding")?;
+                        Ok((name, value))
+                    })
+                    .collect::<crate::Result<Vec<_>>>()?
+            };
+            let counters = GlobalCounters::from_state(StoredState {
+                counters,
+                variables,
+            })?;
+            let prior = counters.snapshot_state()?;
             Ok((
                 Self {
                     connection,
@@ -152,22 +177,49 @@ mod unix {
         }
 
         pub fn save(&mut self, counters: &GlobalCounters) -> crate::Result<()> {
-            let snapshot = counters.snapshot()?;
+            let snapshot = counters.snapshot_state()?;
             if snapshot == self.prior {
                 return Ok(());
             }
             let tx = self.connection.transaction()?;
-            tx.execute("DELETE FROM counters", [])?;
-            {
+            if snapshot.counters != self.prior.counters {
+                tx.execute("DELETE FROM counters", [])?;
                 let mut insert =
                     tx.prepare("INSERT INTO counters (name, value) VALUES (?1, ?2)")?;
-                for (name, value) in &snapshot {
+                for (name, value) in &snapshot.counters {
                     insert.execute(params![name, value])?;
+                }
+            }
+            if snapshot.variables != self.prior.variables {
+                tx.execute("DELETE FROM variables", [])?;
+                let mut insert =
+                    tx.prepare("INSERT INTO variables (name, value) VALUES (?1, ?2)")?;
+                for (name, value) in &snapshot.variables {
+                    let bytes =
+                        serde_json::to_vec(value).map_err(|_| "cannot encode stored variable")?;
+                    if bytes.len() > 128 * 1024 {
+                        return Err("stored variable exceeds its encoding limit".into());
+                    }
+                    insert.execute(params![name, bytes])?;
                 }
             }
             tx.commit()?;
             self.prior = snapshot;
             Ok(())
         }
+    }
+
+    fn verify_tables(connection: &Connection, typed: bool) -> crate::Result<()> {
+        let (expected, actual): (u32, u32) = connection.query_row(
+            "SELECT COUNT(*), COUNT(CASE WHEN type = 'table' AND
+                ((name = 'counters' AND sql = ?1) OR (?3 AND name = 'variables' AND sql = ?2))
+                THEN 1 END) FROM sqlite_schema WHERE sql IS NOT NULL",
+            params![COUNTERS_SCHEMA, VARIABLES_SCHEMA, typed],
+            |row| Ok((row.get(0)?, row.get(1)?)),
+        )?;
+        if expected != actual || expected != if typed { 2 } else { 1 } {
+            return Err("unexpected objects in the state database schema".into());
+        }
+        Ok(())
     }
 }

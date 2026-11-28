@@ -146,7 +146,7 @@ impl<S: EventSource> EventSource for ScheduledSource<S> {
 mod tests {
     use super::*;
 
-    #[tokio::test]
+    #[tokio::test(start_paused = true)]
     async fn timers_skip_missed_intervals_and_honor_cancellation_and_scope() {
         let room = RoomId::new(1).unwrap();
         let mut schedule = Schedule::new(&[room]).unwrap();

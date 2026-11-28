@@ -522,6 +522,7 @@ name = "sculk-script"
 version = "0.1.0"
 dependencies = [
  "sculk-bot",
+ "serde",
  "thiserror",
  "tokio",
 ]

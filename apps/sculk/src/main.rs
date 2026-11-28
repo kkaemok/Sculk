@@ -23,7 +23,7 @@ type Result<T> = std::result::Result<T, Box<dyn std::error::Error + Send + Sync>
 const HELP: &str = "\
 sculk [--config PATH] init
 sculk [--config PATH] doctor | status
-sculk [--config PATH] script check | list
+sculk [--config PATH] script check [--json] | list | commands
 sculk [--config PATH] run --offline
 sculk [--config PATH] run --live PRIVATE_JSON [--refresh] [--report NEW_PATH]
 sculk [--config PATH] run --live PRIVATE_JSON --validate-command PRIVATE_TRIGGER_FILE
@@ -31,6 +31,7 @@ sculk [--config PATH] run --live-service PRIVATE_JSON
 sculk auth check | preflight PRIVATE_JSON
 sculk auth login PRIVATE_JSON [owner validation options]
 sculk auth status
+sculk protocol status | monitor | stats PRIVATE_JSON [owner validation options]
 sculk rooms list | info PRIVATE_JSON
 The offline console supports :reload, :list, :room ID, :status and :quit.
 Build with --features live-validation to use the interactive owner probe.";
@@ -97,6 +98,20 @@ fn cli(args: Vec<String>) -> Result<ExitCode> {
                 program.handlers().len()
             );
         }
+        ["script", "check", "--json"] => return script_diagnostics(path),
+        ["script", "commands"] => {
+            let host = Host::load(path)?;
+            let (_, program) = host.compile(Arc::default())?;
+            for command in program.commands() {
+                println!(
+                    "{} prefixes={:?} aliases={:?}",
+                    command.name, command.prefixes, command.aliases
+                );
+                for arg in command.arguments {
+                    println!("  {} {:?} optional={}", arg.name, arg.kind, arg.optional());
+                }
+            }
+        }
         ["script", "list"] => list(&Host::load(path)?.script_paths()?),
         ["run", "--offline"] => Host::load(path)?.run_offline()?,
         ["run", mode @ ("--live" | "--live-service"), auth, options @ ..] => {
@@ -126,6 +141,17 @@ fn cli(args: Vec<String>) -> Result<ExitCode> {
                 None,
             );
         }
+        ["protocol", "status", path] => return run_probe("--check-config", [*path]),
+        ["protocol", kind @ ("monitor" | "stats"), private, options @ ..] => {
+            return owner_probe(
+                std::iter::once(*private).chain(options.iter().copied()),
+                Some(if *kind == "monitor" {
+                    "--protocol-monitor"
+                } else {
+                    "--protocol-stats"
+                }),
+            );
+        }
         ["rooms", "list", private_config] => {
             return owner_probe([*private_config], Some("--read-only"))
         }
@@ -135,6 +161,40 @@ fn cli(args: Vec<String>) -> Result<ExitCode> {
         _ => return Err("unknown options. Run sculk --help".into()),
     }
     Ok(ExitCode::SUCCESS)
+}
+
+fn script_diagnostics(path: &Path) -> Result<ExitCode> {
+    let mut diagnostics = Vec::new();
+    let mut handler_count = None;
+    match Host::load(path).and_then(|host| {
+        let program = host.load_program(Arc::default())?;
+        if let Ok(program) = &program {
+            host.install(program)?;
+        }
+        Ok(program)
+    }) {
+        Ok(Ok(program)) => handler_count = Some(program.handlers().len()),
+        Ok(Err(errors)) => diagnostics.extend(errors.into_iter().map(|error| serde_json::json!({
+            "filename": error.filename, "category": error.category.code(), "message": error.explanation,
+            "start": error.span.start, "end": error.span.end,
+            "line": error.span.line, "column": error.span.column,
+        }))),
+        Err(_) => diagnostics.push(serde_json::json!({
+            "category": "host", "message": "configuration, script loading or handler registration failed",
+        })),
+    }
+    let ok = handler_count.is_some();
+    println!(
+        "{}",
+        serde_json::json!({
+            "schema_version": 1, "ok": ok, "handlers": handler_count, "diagnostics": diagnostics,
+        })
+    );
+    Ok(if ok {
+        ExitCode::SUCCESS
+    } else {
+        ExitCode::FAILURE
+    })
 }
 
 #[cfg(all(unix, feature = "live-validation"))]
@@ -244,17 +304,28 @@ impl<'a> Host<'a> {
     }
 
     fn compile(&self, counters: Arc<GlobalCounters>) -> Result<(Bot, CompiledScripts)> {
-        let program = Compiler::new(self.config.script_limits())
+        let program = self.load_program(counters)?.map_err(|diagnostics| {
+            for diagnostic in diagnostics {
+                eprintln!("{diagnostic}");
+            }
+            "script compilation failed"
+        })?;
+        let bot = self.install(&program)?;
+        Ok((bot, program))
+    }
+
+    fn load_program(
+        &self,
+        counters: Arc<GlobalCounters>,
+    ) -> Result<std::result::Result<CompiledScripts, Vec<sculk_script::Diagnostic>>> {
+        Ok(Compiler::new(self.config.script_limits())
             .case_sensitive(self.config.bot.case_sensitive)
             .default_prefixes(self.config.bot.default_prefixes.clone())
             .with_globals(counters)
-            .load_files(&self.script_paths()?)
-            .map_err(|diagnostics| {
-                for diagnostic in diagnostics {
-                    eprintln!("{diagnostic}");
-                }
-                "script compilation failed"
-            })?;
+            .load_files(&self.script_paths()?))
+    }
+
+    fn install(&self, program: &CompiledScripts) -> Result<Bot> {
         let mut bot = Bot::new(sculk_bot::Config {
             case_sensitive: self.config.bot.case_sensitive,
             event_capacity: self.config.limits.event_capacity,
@@ -267,7 +338,7 @@ impl<'a> Host<'a> {
                 bot.room_prefixes(RoomId::new(room.id)?, &room.prefixes)?;
             }
         }
-        Ok((bot, program))
+        Ok(bot)
     }
 
     fn run_offline(&self) -> Result<()> {
@@ -414,6 +485,18 @@ impl Outbound for ConsoleMock {
     ) -> BoxFuture<'a, std::result::Result<OutboundReceipt, OutboundError>> {
         Box::pin(async move {
             println!("Bot (mock): {}", text.escape_debug());
+            Ok(OutboundReceipt::MockAccepted)
+        })
+    }
+
+    fn send_message<'a>(
+        &'a self,
+        _: RoomId,
+        message: &'a sculk_bot::OutgoingMessage,
+        _: watch::Receiver<bool>,
+    ) -> BoxFuture<'a, std::result::Result<OutboundReceipt, OutboundError>> {
+        Box::pin(async move {
+            println!("Bot (mock quote): {}", message.text().escape_debug());
             Ok(OutboundReceipt::MockAccepted)
         })
     }
