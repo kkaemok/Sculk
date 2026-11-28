@@ -19,6 +19,35 @@ use tokio_util::codec::Framed;
 const ID: i64 = 9_007_199_254_740_993;
 
 #[test]
+fn historical_reaction_keeps_exact_scoped_ids_and_the_raw_action() {
+    use sculk_client::messaging::LogChange;
+    let raw = packet(
+        "SYNCACTION",
+        doc! {"userId":ID+1,"chatId":ID,"logId":ID+2,"type":100},
+    );
+    let event = Event::from_packet(raw.clone());
+    let Some(LogChange::Reaction {
+        room,
+        message,
+        member,
+        action,
+    }) = event.historical_log_change().unwrap()
+    else {
+        panic!("reaction observation expected");
+    };
+    assert_eq!(
+        (room.get(), message.get(), member.get(), action),
+        (ID, ID + 2, ID + 1, 100)
+    );
+    assert!(matches!(event, Event::Unknown(original) if original == raw));
+    assert!(
+        Event::from_packet(packet("SYNCDLMSG", doc! {"chatId":ID, "logId":-1_i64}))
+            .historical_log_change()
+            .is_err()
+    );
+}
+
+#[test]
 fn member_departure_preserves_a_room_scoped_observation_and_unknown_cause() {
     use sculk_client::messaging::MembershipKind;
     let raw = packet(

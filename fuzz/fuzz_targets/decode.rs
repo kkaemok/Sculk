@@ -9,8 +9,12 @@ fuzz_target!(|data: &[u8]| {
     let mut input = bytes::BytesMut::from(data);
     while let Ok(Some(packet)) = codec.decode(&mut input) {
         let event = sculk_client::messaging::Event::from_packet(packet.clone());
+        let _ = event.membership();
+        let _ = event.historical_log_change();
         if let sculk_client::messaging::Event::Message(message) = event {
             let _ = (message.text(), message.attachment(), message.previous_id());
+            let _ = message.quote();
+            let _ = message.content();
         }
         if packet.command.as_str() == "SYNCMSG" {
             let request = sculk_client::synchronization::Request::new(

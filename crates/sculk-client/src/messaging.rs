@@ -422,6 +422,22 @@ pub struct MembershipChange {
     pub kind: MembershipKind,
 }
 
+/// Historical log-change pushes documented by OpenKakao. Codes are source
+/// observations and do not establish current Android-side behavior.
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub enum LogChange {
+    Deleted {
+        room: RoomId,
+        message: MessageId,
+    },
+    Reaction {
+        room: RoomId,
+        message: MessageId,
+        member: crate::read_only::RoomMemberId,
+        action: i32,
+    },
+}
+
 impl Event {
     /// Decode on the consumer, outside the network receive task.
     pub fn from_packet(packet: Packet) -> Self {
@@ -459,6 +475,39 @@ impl Event {
         let member = crate::read_only::RoomMemberId::new(integer(log, "authorId")?)
             .map_err(|_| InvalidMessage)?;
         Ok(Some(MembershipChange { room, member, kind }))
+    }
+
+    /// Inspect the historical SYNCDLMSG or SYNCACTION fields without
+    /// advancing room history or substituting a message dispatch event.
+    pub fn historical_log_change(&self) -> Result<Option<LogChange>, InvalidMessage> {
+        let Self::Unknown(packet) = self else {
+            return Ok(None);
+        };
+        let command = packet.command.as_str();
+        if !matches!(command, "SYNCDLMSG" | "SYNCACTION") {
+            return Ok(None);
+        }
+        let doc = body(packet)?;
+        fields(doc)?;
+        if packet.status != 0 || (value(doc, "status")?.is_some() && integer(doc, "status")? != 0) {
+            return Err(InvalidMessage);
+        }
+        let room = RoomId::new(integer(doc, "chatId")?).map_err(|_| InvalidMessage)?;
+        let message = MessageId::new(integer(doc, "logId")?)?;
+        let change = if command == "SYNCACTION" {
+            let member = crate::read_only::RoomMemberId::new(integer(doc, "userId")?)
+                .map_err(|_| InvalidMessage)?;
+            let action = i32::try_from(integer(doc, "type")?).map_err(|_| InvalidMessage)?;
+            LogChange::Reaction {
+                room,
+                message,
+                member,
+                action,
+            }
+        } else {
+            LogChange::Deleted { room, message }
+        };
+        Ok(Some(change))
     }
 }
 /// Predictable receive outcomes, with no silent catch-up or automatic replay.
