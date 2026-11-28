@@ -65,6 +65,7 @@ pub enum Failure {
     Handler(HandlerError),
     Command(HandlerError),
     PermissionDenied,
+    Cooldown,
     UnknownCommand,
     Parse(crate::ParseError),
 }
@@ -105,6 +106,33 @@ where
 struct Registered {
     command: Command,
     handler: Handler,
+    cooldown: Option<Cooldown>,
+}
+struct Cooldown {
+    interval: Duration,
+    members: std::sync::Mutex<HashMap<(RoomId, crate::SenderId), tokio::time::Instant>>,
+}
+impl Cooldown {
+    fn admit(&self, room: RoomId, sender: crate::SenderId) -> bool {
+        let Ok(mut members) = self.members.lock() else {
+            return false;
+        };
+        let now = tokio::time::Instant::now();
+        if members
+            .get(&(room, sender))
+            .is_some_and(|&previous| now.duration_since(previous) < self.interval)
+        {
+            return false;
+        }
+        if members.len() == 256 {
+            members.retain(|_, previous| now.duration_since(*previous) < self.interval);
+            if members.len() == 256 {
+                return false;
+            }
+        }
+        members.insert((room, sender), now);
+        true
+    }
 }
 /// Startup builder consumed by `run`; no registration mutation or definition
 /// parsing in the receive loop. A future script host registers the same callbacks.
@@ -256,6 +284,12 @@ impl Bot {
             return Err(RegistrationError::Limit);
         }
         if command
+            .cooldown
+            .is_some_and(|duration| duration.is_zero() || duration > Duration::from_secs(86400))
+        {
+            return Err(RegistrationError::Invalid);
+        }
+        if command
             .permissions
             .iter()
             .any(|p| !self.permissions.defaults.contains_key(p))
@@ -318,6 +352,10 @@ impl Bot {
                 .extend(names.into_iter().map(|name| (name, self.commands.len())));
         }
         self.commands.push(Registered {
+            cooldown: command.cooldown.map(|interval| Cooldown {
+                interval,
+                members: Default::default(),
+            }),
             command,
             handler: boxed(handler),
         });
@@ -513,9 +551,21 @@ impl Bot {
             self.failure(ctx, Failure::UnknownCommand, work).await;
             return;
         };
-        let Registered { command, handler } = &self.commands[index];
+        let Registered {
+            command,
+            handler,
+            cooldown,
+        } = &self.commands[index];
         if command.permissions.iter().any(|id| !ctx.has_permission(id)) {
             self.failure(ctx, Failure::PermissionDenied, work).await;
+            return;
+        }
+        if cooldown.as_ref().is_some_and(|cooldown| {
+            !ctx.room()
+                .zip(ctx.sender())
+                .is_some_and(|(room, sender)| cooldown.admit(room, sender))
+        }) {
+            self.failure(ctx, Failure::Cooldown, work).await;
             return;
         }
         work.commands += 1;

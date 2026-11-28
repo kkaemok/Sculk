@@ -1,7 +1,12 @@
 //! Each case runs in a separate process. RSS includes runtime and the local peer,
 //! not just logical packet lengths. No live traffic or target-machine claim.
 use futures_util::{SinkExt, StreamExt};
-use sculk_client::{messaging::Event, Client, Config};
+use sculk_client::{
+    members::Cache,
+    messaging::{Event, Message, MessageBuilder},
+    read_only::{Member, MemberSnapshot, Members, RoomId, RoomMemberId},
+    Client, Config,
+};
 use sculk_protocol::{Command, LocoCodec, Packet};
 use std::time::Instant;
 use tokio_util::codec::Framed;
@@ -75,6 +80,7 @@ fn main() {
             .unwrap();
         runtime.block_on(case(args[2].parse().unwrap(), args[3].parse().unwrap()));
     } else {
+        typed_cases();
         for capacity in [8, 16, 32] {
             for text_bytes in [512, 2048, 16384] {
                 let status = std::process::Command::new(std::env::current_exe().unwrap())
@@ -85,4 +91,62 @@ fn main() {
             }
         }
     }
+}
+
+fn typed_cases() {
+    const ID: i64 = 9_007_199_254_740_993;
+    let room = RoomId::new(ID).unwrap();
+    let member = RoomMemberId::new(ID + 1).unwrap();
+    let members = || Members {
+        room,
+        token: 1,
+        members: vec![Member {
+            user_id: member.get(),
+            nickname: Some("친구".into()),
+        }],
+    };
+    let packet = Packet::from_document(0, Command::new("MSG").unwrap(), &bson::doc! {
+        "chatId":ID, "chatLog":{
+            "logId":ID+2, "authorId":ID+1, "type":1, "sendAt":1,
+            "message":"안녕하세요 @친구",
+            "attachment":format!(r#"{{"mentions":[{{"user_id":{},"at":[1],"len":2}}]}}"#, member.get()),
+        }
+    }).unwrap();
+    let snapshot = members();
+    let target = snapshot.mention_target(member).unwrap();
+    let original = Message::from_packet(packet.clone()).unwrap();
+    let mut cache = Cache::new(16, std::time::Duration::from_secs(10)).unwrap();
+    let now = Instant::now();
+    cache
+        .replace(MemberSnapshot::Complete(members()), now)
+        .unwrap();
+    measure("typed-message", || {
+        let message = Message::from_packet(std::hint::black_box(packet.clone())).unwrap();
+        std::hint::black_box(message.content());
+    });
+    measure("quote-and-mention-builder", || {
+        std::hint::black_box(
+            MessageBuilder::new()
+                .text("감사합니다 ")
+                .mention(&target)
+                .reply_to(&original, None)
+                .build()
+                .unwrap(),
+        );
+    });
+    measure("scoped-member-id-lookup", || {
+        std::hint::black_box(cache.get(std::hint::black_box(room), member, now));
+    });
+}
+
+fn measure(name: &str, mut workload: impl FnMut()) {
+    let count = 100_000;
+    let start = Instant::now();
+    for _ in 0..count {
+        workload();
+    }
+    println!(
+        "{name} ns/iteration={:.1}",
+        start.elapsed().as_nanos() as f64 / f64::from(count)
+    );
 }

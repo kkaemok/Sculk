@@ -699,13 +699,16 @@ impl<'a> Runner<'a> {
         }
         let no_effect = matches!(
             report.first_failure,
-            Some(Failure::UnknownCommand | Failure::PermissionDenied | Failure::Parse(_))
-                | Some(Failure::Handler(HandlerError::Outbound(
-                    OutboundError::Unavailable | OutboundError::NotSent
-                )))
-                | Some(Failure::Command(HandlerError::Outbound(
-                    OutboundError::Unavailable | OutboundError::NotSent
-                )))
+            Some(
+                Failure::UnknownCommand
+                    | Failure::PermissionDenied
+                    | Failure::Cooldown
+                    | Failure::Parse(_)
+            ) | Some(Failure::Handler(HandlerError::Outbound(
+                OutboundError::Unavailable | OutboundError::NotSent
+            ))) | Some(Failure::Command(HandlerError::Outbound(
+                OutboundError::Unavailable | OutboundError::NotSent
+            )))
         );
         if report.stop != StopReason::Exhausted
             || report.shutdown.is_err()

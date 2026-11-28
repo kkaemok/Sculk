@@ -131,7 +131,17 @@ pub fn parse(lines: &[Line], d: &mut Diagnostics<'_>, registry: &Registry) -> Sc
             }
             continue;
         }
-        let result = if word(&t[0], "on") && t.len() >= 3 && t.last().is_some_and(colon) {
+        let korean_message =
+            t.len() == 4 && colon(&t[3]) && words(&t[..3], &["메시지를", "받았을", "때"]);
+        let result = if korean_message {
+            p.index += 1;
+            Some(Declaration::Event {
+                kind: sculk_bot::EventKind::Message,
+                body: p.block(4, 1),
+                span,
+                addon: None,
+            })
+        } else if word(&t[0], "on") && t.len() >= 3 && t.last().is_some_and(colon) {
             let header = &t[1..t.len() - 1];
             let builtin = if header.len() == 1 {
                 match &header[0].kind {
@@ -356,6 +366,7 @@ impl Parser<'_, '_, '_> {
         let mut prefixes = None;
         let mut aliases = None;
         let mut permissions = None;
+        let mut cooldown_ms = None;
         let mut body = None;
         while self.index < self.lines.len() && self.lines[self.index].indent > 0 {
             let line = &self.lines[self.index];
@@ -393,6 +404,28 @@ impl Parser<'_, '_, '_> {
                         .push(line.span, Category::Command, "duplicate permissions");
                 }
                 permissions = strings(&t[2..], self.d, line.span);
+            } else if word(&t[0], "cooldown") {
+                let duration = match &t[2..] {
+                    [Token {
+                        kind: Kind::Integer(value),
+                        ..
+                    }, token]
+                        if word(token, "milliseconds") =>
+                    {
+                        u64::try_from(*value)
+                            .ok()
+                            .filter(|ms| (1..=86_400_000).contains(ms))
+                    }
+                    _ => None,
+                };
+                if cooldown_ms.is_some() || duration.is_none() {
+                    self.d.push(
+                        line.span,
+                        Category::Command,
+                        "expected one cooldown in 1..86400000 milliseconds",
+                    );
+                }
+                cooldown_ms = duration;
             } else {
                 self.d.push(
                     line.span,
@@ -415,6 +448,7 @@ impl Parser<'_, '_, '_> {
             prefixes,
             aliases: aliases.unwrap_or_default(),
             permissions: permissions.unwrap_or_default(),
+            cooldown_ms,
             body,
             span,
         })
@@ -454,6 +488,20 @@ impl Parser<'_, '_, '_> {
             };
             let kind = if word(&t[0], "if") && t.last().is_some_and(colon) {
                 self.conditional(&t[1..t.len() - 1], indent, depth, span)
+            } else if t.len() == 4 && word(&t[0], "메시지가") && word(&t[2], "이면") && colon(&t[3])
+            {
+                let comparison = [
+                    Token {
+                        kind: Kind::Word("message".into()),
+                        span: t[0].span,
+                    },
+                    Token {
+                        kind: Kind::Word("is".into()),
+                        span: t[2].span,
+                    },
+                    t[1].clone(),
+                ];
+                self.conditional(&comparison, indent, depth, span)
             } else if word(&t[0], "repeat")
                 && t.len() >= 4
                 && word(&t[t.len() - 2], "times")
@@ -486,6 +534,12 @@ impl Parser<'_, '_, '_> {
                 };
                 expression(value, self.d, 1, span, self.registry)
                     .map(|expr| StatementKind::Reply(expr, kind))
+            } else if t.len() == 3
+                && matches!(t[0].kind, Kind::String(_))
+                && words(&t[1..], &["라고", "답장"])
+            {
+                expression(&t[..1], self.d, 1, span, self.registry)
+                    .map(|expr| StatementKind::Reply(expr, ReplyKind::Room))
             } else if word(&t[0], "send")
                 && t.len() >= 4
                 && words(&t[t.len() - 2..], &["to", "event-room"])
@@ -531,6 +585,10 @@ impl Parser<'_, '_, '_> {
                     .map(StatementKind::Wait)
             } else if t.len() == 1 && word(&t[0], "stop") {
                 Some(StatementKind::Stop)
+            } else if t.len() == 1 && word(&t[0], "break") {
+                Some(StatementKind::Break)
+            } else if t.len() == 1 && word(&t[0], "continue") {
+                Some(StatementKind::Continue)
             } else if let Some(matched) = self.registry.resolve(t, Group::Effect) {
                 if matched.consumed != t.len() {
                     self.d.push(

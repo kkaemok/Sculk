@@ -104,8 +104,8 @@ fn cli(args: Vec<String>) -> Result<ExitCode> {
             let (_, program) = host.compile(Arc::default())?;
             for command in program.commands() {
                 println!(
-                    "{} prefixes={:?} aliases={:?}",
-                    command.name, command.prefixes, command.aliases
+                    "{} prefixes={:?} aliases={:?} cooldown-ms={:?}",
+                    command.name, command.prefixes, command.aliases, command.cooldown_ms
                 );
                 for arg in command.arguments {
                     println!("  {} {:?} optional={}", arg.name, arg.kind, arg.optional());
@@ -452,6 +452,7 @@ impl<'a> Host<'a> {
             match report.first_failure {
                 Some(sculk_bot::Failure::UnknownCommand) => eprintln!("Unknown command."),
                 Some(sculk_bot::Failure::PermissionDenied) => eprintln!("Permission denied."),
+                Some(sculk_bot::Failure::Cooldown) => eprintln!("Command is on cooldown."),
                 Some(sculk_bot::Failure::Parse(_)) => eprintln!("Invalid command arguments."),
                 _ => {}
             }

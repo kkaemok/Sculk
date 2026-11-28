@@ -67,6 +67,7 @@ pub(crate) struct CommandSpec {
     pub prefixes: Vec<String>,
     pub permissions: Vec<PermissionId>,
     pub arguments: Vec<ArgumentSpec>,
+    pub cooldown_ms: Option<u64>,
 }
 pub(crate) struct Handler {
     pub filename: Arc<str>,
@@ -110,6 +111,7 @@ pub struct CommandInfo<'a> {
     pub prefixes: &'a [String],
     pub aliases: &'a [String],
     pub arguments: &'a [ArgumentSpec],
+    pub cooldown_ms: Option<u64>,
 }
 /// Immutable compiled bundle. Cloning shares instructions, never reparses source.
 #[derive(Clone)]
@@ -131,6 +133,7 @@ impl CompiledScripts {
                 prefixes: &command.prefixes,
                 aliases: &command.aliases,
                 arguments: &command.arguments,
+                cooldown_ms: command.cooldown_ms,
             })
         })
     }
@@ -191,6 +194,9 @@ impl CompiledScripts {
             };
             if let Some(spec) = &handler.command {
                 let mut command = Command::new(&spec.name).prefixes(spec.prefixes.clone());
+                if let Some(ms) = spec.cooldown_ms {
+                    command = command.cooldown(std::time::Duration::from_millis(ms));
+                }
                 for alias in &spec.aliases {
                     command = command.alias(alias);
                 }
@@ -453,6 +459,7 @@ impl Compiler {
                             bindings: HashMap::new(),
                             locals: parameters.len(),
                             repeat_slots: 0,
+                            loops: Vec::new(),
                             code: Vec::new(),
                             kind: EventKind::All,
                             arguments: None,
@@ -502,6 +509,7 @@ impl Compiler {
                         prefixes,
                         aliases,
                         permissions,
+                        cooldown_ms,
                         body,
                         span,
                     } => {
@@ -594,6 +602,7 @@ impl Compiler {
                                 prefixes: actual,
                                 permissions: ids,
                                 arguments,
+                                cooldown_ms,
                             }),
                             None,
                         )
@@ -604,6 +613,7 @@ impl Compiler {
                     bindings: HashMap::new(),
                     locals: 0,
                     repeat_slots: 0,
+                    loops: Vec::new(),
                     code: Vec::new(),
                     kind,
                     functions: &signatures,
@@ -706,6 +716,7 @@ struct Semantic<'a, 'b> {
     bindings: HashMap<String, (usize, Type)>,
     locals: usize,
     repeat_slots: usize,
+    loops: Vec<LoopJumps>,
     code: Vec<Instruction>,
     kind: EventKind,
     arguments: Option<Vec<Type>>,
@@ -715,7 +726,26 @@ struct Semantic<'a, 'b> {
     registry: &'a Registry,
     capabilities: &'a [Capability],
 }
+
+#[derive(Default)]
+struct LoopJumps {
+    breaks: Vec<usize>,
+    continues: Vec<usize>,
+}
 impl Semantic<'_, '_> {
+    fn finish_loop(&mut self, continue_at: usize) {
+        let jumps = self
+            .loops
+            .pop()
+            .expect("compiler is closing its current loop");
+        let exit = self.code.len();
+        for index in jumps.breaks {
+            self.patch_jump(index, exit);
+        }
+        for index in jumps.continues {
+            self.patch_jump(index, continue_at);
+        }
+    }
     fn entry(&mut self, id: SyntaxId, span: Span) -> Option<Arc<Entry>> {
         let entry = self.registry.entry(id).clone();
         if entry
@@ -958,6 +988,23 @@ impl Semantic<'_, '_> {
                         .push(span, Category::Type, "use return inside a function");
                 }
                 StatementKind::Stop => self.emit(span, Operation::Stop),
+                StatementKind::Break | StatementKind::Continue => {
+                    let Some(jumps) = self.loops.last_mut() else {
+                        self.d.push(
+                            span,
+                            Category::Scope,
+                            "loop control requires an enclosing loop",
+                        );
+                        continue;
+                    };
+                    let patch = if matches!(statement.kind, StatementKind::Break) {
+                        &mut jumps.breaks
+                    } else {
+                        &mut jumps.continues
+                    };
+                    patch.push(self.code.len());
+                    self.emit(span, Operation::Jump(0));
+                }
                 StatementKind::Return(value) => {
                     let Some(expected) = self.return_type else {
                         self.d.push(
@@ -1015,9 +1062,12 @@ impl Semantic<'_, '_> {
                     let slot = self.repeat_slots;
                     self.repeat_slots += 1;
                     self.emit(span, Operation::Repeat(count, slot, 0));
+                    self.loops.push(LoopJumps::default());
                     self.scoped_block(body, depth);
+                    let continue_at = self.code.len();
                     self.emit(span, Operation::RepeatNext(slot, start + 1));
                     self.patch_jump(start, self.code.len());
+                    self.finish_loop(continue_at);
                 }
                 StatementKind::While(condition, body) => {
                     let Some((condition, Type::Boolean)) = self.expr(condition, 1) else {
@@ -1027,9 +1077,11 @@ impl Semantic<'_, '_> {
                     };
                     let start = self.code.len();
                     self.emit(span, Operation::FalseJump(condition, 0));
+                    self.loops.push(LoopJumps::default());
                     self.scoped_block(body, depth);
                     self.emit(span, Operation::Jump(start));
                     self.patch_jump(start, self.code.len());
+                    self.finish_loop(start);
                 }
                 StatementKind::If(condition, yes, no) => {
                     let Some((condition, Type::Boolean)) = self.expr(condition, 1) else {

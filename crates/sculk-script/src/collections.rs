@@ -50,7 +50,7 @@ impl Collection {
                 .iter()
                 .try_fold(0, |total, value| Some(total + size(value)?)),
             Items::Map(items) => items.iter().try_fold(0, |total, (key, value)| {
-                (key.len() <= 256).then_some(total + key.len() + size(value)?)
+                (key.len() <= CAPACITY).then_some(total + key.len() + size(value)?)
             }),
         }
         .map(|total| total + 32)

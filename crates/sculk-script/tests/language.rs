@@ -104,6 +104,67 @@ command count <value: integer> <enabled: boolean> <delay: duration> <here: room>
     );
     assert_eq!(errors.len(), 2);
 }
+
+#[tokio::test]
+async fn break_and_continue_target_the_innermost_loop_and_preserve_repeat_budget() {
+    let p = compile(
+        r#"
+command iterations:
+    trigger:
+        set {_total} to 0
+        repeat 3 times:
+            repeat 4 times:
+                add 1 to {global::count}
+                if {global::count} is 2:
+                    break
+                continue
+                reply "unreachable"
+            set {_total} to {_total} + 1
+        reply "%{_total}%:%{global::count}%"
+"#,
+    );
+    let (replies, report, errors) = run(&p, &["!iterations"]).await;
+    assert_eq!(replies, ["3:10"]);
+    assert_eq!(report.failures, 0);
+    assert!(errors.is_empty());
+}
+
+#[tokio::test]
+async fn korean_message_aliases_use_the_same_compiler_and_runtime() {
+    let korean = compile(
+        r#"
+메시지를 받았을 때:
+    메시지가 "안녕"이면:
+        "안녕하세요 😀"라고 답장
+"#,
+    );
+    let english = compile(
+        r#"
+on message:
+    if message is "안녕":
+        reply "안녕하세요 😀"
+"#,
+    );
+    assert_eq!(korean.instruction_count(), english.instruction_count());
+    assert_eq!(run(&korean, &["안녕", "무시"]).await.0, ["안녕하세요 😀"]);
+}
+
+#[tokio::test(start_paused = true)]
+async fn aliases_share_the_command_cooldown() {
+    let p = compile(
+        r#"
+command limited:
+    aliases: l
+    cooldown: 1000 milliseconds
+    trigger:
+        reply "once"
+"#,
+    );
+    assert_eq!(p.commands().next().unwrap().cooldown_ms, Some(1000));
+    let (sent, report, _) = run(&p, &["!limited", "!l"]).await;
+    assert_eq!(sent, ["once"]);
+    assert_eq!(report.first_failure, Some(sculk_bot::Failure::Cooldown));
+}
 #[tokio::test]
 async fn both_extensions_compile_and_execute_identically() {
     let text = "on message:\n    if message is \"안녕\":\n        reply \"안녕하세요!\"\n";

@@ -22,6 +22,36 @@ fn fixture(bytes: &[u8]) -> Packet {
 fn packet(command: &str, body: bson::Document) -> Packet {
     Packet::from_document(1, Command::new(command).unwrap(), &body).unwrap()
 }
+
+#[cfg(feature = "messaging")]
+#[tokio::test]
+async fn room_details_preserve_exact_watermarks_and_unavailable_unread_count() {
+    use sculk_client::read_only::{RoomKind, RoomLog};
+    let response = packet(
+        "CHATINFO",
+        doc! {"chatInfo":{
+            "chatId":ID,"li":ID+1,"lastLogId":ID+2,"lastSeenLogId":0_i64,
+            "activeMembersCount":3,"invalidNewMessageCount":true,"type":3_i32,
+            "chatMetas":[{"type":3_i32,"content":"시험"}]
+        }},
+    );
+    let (mut session, peer) = setup(vec![response]).await;
+    let detail = session
+        .room_details(RoomId::new(ID).unwrap())
+        .await
+        .unwrap();
+    let Some(RoomLog::Id(log)) = detail.watermark else {
+        panic!("expected log")
+    };
+    assert_eq!(log.get(), ID + 2);
+    assert_eq!(detail.last_seen, Some(RoomLog::Empty));
+    assert_eq!(detail.link.unwrap().get(), ID + 1);
+    assert_eq!(detail.kind, Some(RoomKind::Numeric(3)));
+    assert_eq!(detail.name.as_deref(), Some("시험"));
+    assert_eq!(detail.unread, None);
+    session.disconnect().await;
+    peer.await.unwrap();
+}
 async fn setup(replies: Vec<Packet>) -> (Session, tokio::task::JoinHandle<()>) {
     let (settings, acceptor) = support::tls_pair();
     let (a, b) = tokio::io::duplex(16384);

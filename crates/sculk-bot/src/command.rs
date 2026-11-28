@@ -8,6 +8,7 @@ pub struct Command {
     pub(crate) aliases: Vec<String>,
     pub(crate) permissions: Vec<crate::PermissionId>,
     pub(crate) prefixes: Option<Vec<String>>,
+    pub(crate) cooldown: Option<std::time::Duration>,
 }
 impl Command {
     /// Command names/aliases are Unicode alphanumerics, `_` or `-`, 1..64 bytes.
@@ -17,6 +18,7 @@ impl Command {
             aliases: Vec::new(),
             permissions: Vec::new(),
             prefixes: None,
+            cooldown: None,
         }
     }
     /// Add a startup alias, checked for collisions on registration.
@@ -33,6 +35,11 @@ impl Command {
     /// additionally require the bot owner's explicit prefixless opt-in.
     pub fn prefixes(mut self, prefixes: impl IntoIterator<Item = impl Into<String>>) -> Self {
         self.prefixes = Some(prefixes.into_iter().map(Into::into).collect());
+        self
+    }
+    /// Rate-limit repeated invocations from the same member in the same room.
+    pub fn cooldown(mut self, interval: std::time::Duration) -> Self {
+        self.cooldown = Some(interval);
         self
     }
 }

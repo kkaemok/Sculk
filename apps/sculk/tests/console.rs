@@ -19,8 +19,15 @@ fn run(dir: &Path, input: &[u8]) -> Output {
         .stderr(Stdio::piped())
         .spawn()
         .unwrap();
-    child.stdin.take().unwrap().write_all(input).unwrap();
-    child.wait_with_output().unwrap()
+    let write = child.stdin.take().unwrap().write_all(input);
+    let output = child.wait_with_output().unwrap();
+    if let Err(error) = write {
+        assert!(
+            !output.status.success() && error.kind() == std::io::ErrorKind::BrokenPipe,
+            "{error}: {output:?}"
+        );
+    }
+    output
 }
 
 #[test]
