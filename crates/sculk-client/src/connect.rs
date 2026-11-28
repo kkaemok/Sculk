@@ -3,6 +3,7 @@
 //! performed. The caller supplies already-authorized credentials, matching
 //! profile, trusted keys, explicit transports and a policy-enforcing dialer.
 use crate::{
+    profile::{Profile, UnsupportedProfile},
     records::SecureStream,
     session::{parse_loginlist_reply, AccessToken, AuthError, Session},
     tls::TlsSettings,
@@ -30,6 +31,12 @@ pub enum Stage {
 /// No peer-supplied text or raw response is included in errors.
 #[derive(Debug, thiserror::Error)]
 pub enum Error {
+    /// Selected profile is unknown or incompatible with the supplied settings.
+    #[error(transparent)]
+    UnsupportedProfile(#[from] UnsupportedProfile),
+    /// A connection or authenticated session already owns this connector.
+    #[error("protocol connector already has a session owner")]
+    SessionOwned,
     /// Invalid caller configuration.
     #[error("invalid connection configuration")]
     Config,
@@ -140,7 +147,7 @@ pub struct DeviceProfile {
     pub use_sub: bool,
 }
 impl DeviceProfile {
-    fn validate(&self) -> Result<(), Error> {
+    pub(crate) fn validate(&self) -> Result<(), Error> {
         for s in [
             &self.os,
             &self.app_version,
@@ -192,15 +199,24 @@ impl DeviceProfile {
     /// Initial LOGINLIST schema shared by the inspected Agent Messenger/OpenKakao
     /// builders. No resume/replay promise or inferred token expiration is made.
     pub fn login_request(&self, token: &AccessToken, device_uuid: &str) -> Result<Packet, Error> {
+        self.login_request_for(token, device_uuid, None)
+    }
+    fn login_request_for(
+        &self,
+        token: &AccessToken,
+        device_uuid: &str,
+        profile: Option<Profile>,
+    ) -> Result<Packet, Error> {
         self.validate_login(token, device_uuid)?;
-        request(
-            "LOGINLIST",
-            &doc! { "appVer": &self.app_version, "prtVer": &self.protocol_version,
-            "os": &self.os, "lang": &self.language, "dtype": 2_i32, "duuid": device_uuid,
-            "oauthToken": token.expose_secret(), "ntype": 0_i32, "MCCMNC": &self.mccmnc,
-            "revision": 0_i32, "chatIds": [], "maxIds": [], "lastTokenId": 0_i64, "lbk": 0_i32,
-            "rp": Bson::Binary(bson::Binary { subtype: bson::spec::BinarySubtype::Generic, bytes: vec![0,0,255,255,0,0] }), "bg": false },
-        )
+        let mut body = doc! { "appVer": &self.app_version, "prtVer": &self.protocol_version,
+        "os": &self.os, "lang": &self.language, "dtype": 2_i32, "duuid": device_uuid,
+        "oauthToken": token.expose_secret(), "ntype": 0_i32, "MCCMNC": &self.mccmnc,
+        "revision": 0_i32, "chatIds": [], "maxIds": [], "lastTokenId": 0_i64, "lbk": 0_i32,
+        "rp": Bson::Binary(bson::Binary { subtype: bson::spec::BinarySubtype::Generic, bytes: vec![0,0,255,255,0,0] }), "bg": false };
+        if profile == Some(Profile::AndroidTablet) {
+            body.insert("isSw", false);
+        }
+        request("LOGINLIST", &body)
     }
 }
 fn account(id: u64) -> Result<i64, Error> {
@@ -364,23 +380,7 @@ impl Drop for OwnedClient {
     }
 }
 impl Options {
-    /// Run TLS GETCONF → explicit secure CHECKIN → explicit secure LOGINLIST.
-    /// The dialer receives each endpoint and must enforce proxy/network/endpoint
-    /// authorization. No socket is opened by Sculk and no failure is retried.
-    pub async fn connect<S, F, Fut>(
-        &self,
-        profile: &DeviceProfile,
-        token: AccessToken,
-        device_uuid: &str,
-        mut cancel: watch::Receiver<bool>,
-        mut dial: F,
-    ) -> Result<Session, Error>
-    where
-        S: AsyncRead + AsyncWrite + Unpin + Send + 'static,
-        F: FnMut(Stage, Endpoint) -> Fut,
-        Fut: Future<Output = Result<S, std::io::Error>>,
-    {
-        profile.validate()?;
+    pub(crate) fn validate(&self) -> Result<(), Error> {
         for duration in [self.stage_timeout, self.total_timeout] {
             if duration.is_zero() || duration > Duration::from_secs(300) {
                 return Err(Error::Config);
@@ -389,8 +389,46 @@ impl Options {
         if self.session_lease.is_zero() || self.session_lease > Duration::from_secs(86400) {
             return Err(Error::Config);
         }
+        Ok(())
+    }
+
+    /// Run TLS GETCONF → explicit secure CHECKIN → explicit secure LOGINLIST.
+    /// The dialer receives each endpoint and must enforce proxy/network/endpoint
+    /// authorization. No socket is opened by Sculk and no failure is retried.
+    pub async fn connect<S, F, Fut>(
+        &self,
+        profile: &DeviceProfile,
+        token: AccessToken,
+        device_uuid: &str,
+        cancel: watch::Receiver<bool>,
+        dial: F,
+    ) -> Result<Session, Error>
+    where
+        S: AsyncRead + AsyncWrite + Unpin + Send + 'static,
+        F: FnMut(Stage, Endpoint) -> Fut,
+        Fut: Future<Output = Result<S, std::io::Error>>,
+    {
+        self.connect_selected(profile, token, device_uuid, cancel, dial, None)
+            .await
+    }
+
+    pub(crate) async fn connect_selected<S, F, Fut>(
+        &self,
+        device: &DeviceProfile,
+        token: AccessToken,
+        device_uuid: &str,
+        mut cancel: watch::Receiver<bool>,
+        mut dial: F,
+        profile: Option<Profile>,
+    ) -> Result<Session, Error>
+    where
+        S: AsyncRead + AsyncWrite + Unpin + Send + 'static,
+        F: FnMut(Stage, Endpoint) -> Fut,
+        Fut: Future<Output = Result<S, std::io::Error>>,
+    {
+        self.validate()?;
         // Preflight all caller-controlled request fields before any connection.
-        profile.validate_login(&token, device_uuid)?;
+        device.validate_login(&token, device_uuid)?;
         let expires = token.expires_at();
         let cancellation = cancel.clone();
         let workflow = async {
@@ -399,6 +437,7 @@ impl Options {
                     Stage::Booking,
                     self.booking.clone(),
                     &Protection::Tls,
+                    None,
                     &mut dial,
                     cancellation.clone(),
                 )
@@ -407,7 +446,7 @@ impl Options {
                 .exchange(
                     Stage::Booking,
                     &booking.0,
-                    profile.booking_request(self.booking_schema, token.user_id())?,
+                    device.booking_request(self.booking_schema, token.user_id())?,
                 )
                 .await?;
             let endpoint = Booking::parse(&packet)?.selected();
@@ -418,6 +457,7 @@ impl Options {
                     Stage::Checkin,
                     endpoint,
                     &self.checkin,
+                    None,
                     &mut dial,
                     cancellation.clone(),
                 )
@@ -426,10 +466,16 @@ impl Options {
                 .exchange(
                     Stage::Checkin,
                     &checkin.0,
-                    profile.checkin_request(token.user_id())?,
+                    device.checkin_request(token.user_id())?,
                 )
                 .await?;
-            let endpoint = checkin_assignment(&packet)?;
+            let mut endpoint = checkin_assignment(&packet)?;
+            let tls_name = if profile == Some(Profile::AndroidTablet) {
+                endpoint.port = Profile::TABLET_TLS_PORT;
+                Some(Profile::TABLET_TLS_NAME)
+            } else {
+                None
+            };
             checkin.0.disconnect().await;
             drop(checkin);
             let mut chat = self
@@ -437,12 +483,13 @@ impl Options {
                     Stage::Login,
                     endpoint,
                     &self.chat,
+                    tls_name,
                     &mut dial,
                     cancellation.clone(),
                 )
                 .await?;
             let mut session = Session::from_secure_client(chat.0.clone());
-            let packet = profile.login_request(&token, device_uuid)?;
+            let packet = device.login_request_for(&token, device_uuid, profile)?;
             let user = token.user_id();
             let lease = self.session_lease;
             session
@@ -486,6 +533,7 @@ impl Options {
         stage: Stage,
         endpoint: Endpoint,
         protection: &Protection,
+        tls_name: Option<&str>,
         dial: &mut F,
         cancel: watch::Receiver<bool>,
     ) -> Result<OwnedClient, Error>
@@ -502,7 +550,12 @@ impl Options {
                 Protection::Tls => {
                     let stream = self
                         .tls
-                        .handshake(stream, endpoint.host(), self.stage_timeout, cancel)
+                        .handshake(
+                            stream,
+                            tls_name.unwrap_or(endpoint.host()),
+                            self.stage_timeout,
+                            cancel,
+                        )
                         .await?;
                     Client::from_stream(stream, self.transport.clone())
                 }

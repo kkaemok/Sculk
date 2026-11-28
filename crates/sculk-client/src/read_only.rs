@@ -125,6 +125,37 @@ pub struct Member {
     /// Optional server nickname; no invented fallback name.
     pub nickname: Option<String>,
 }
+impl Member {
+    /// The exact member ID for use within the containing room.
+    pub fn id(&self) -> Result<RoomMemberId, Error> {
+        RoomMemberId::new(self.user_id)
+    }
+}
+
+/// An exact ID scoped to a room. Its numeric value conveys no account identity.
+#[derive(Clone, Copy, PartialEq, Eq, Hash)]
+pub struct RoomMemberId(i64);
+
+impl RoomMemberId {
+    /// Construct from a positive wire integer from the room.
+    pub fn new(id: i64) -> Result<Self, Error> {
+        if id > 0 {
+            Ok(Self(id))
+        } else {
+            Err(Error::InvalidRequest)
+        }
+    }
+
+    /// Explicit wire value. Treat as private.
+    pub fn get(self) -> i64 {
+        self.0
+    }
+}
+impl std::fmt::Debug for RoomMemberId {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.write_str("RoomMemberId([REDACTED])")
+    }
+}
 /// GETMEM response. No complete membership or replay guarantee across reconnects.
 pub struct Members {
     /// Room requested, not a globally inferred identity scope.

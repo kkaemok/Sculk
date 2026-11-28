@@ -177,6 +177,12 @@ fn status_codes(error: &Failure) -> (Option<i64>, Option<u16>) {
 }
 // Only typed, static categories enter reports. Never format raw error/source text.
 fn failure_category(error: &Failure) -> &'static str {
+    if error
+        .downcast_ref::<sculk_client::profile::UnsupportedProfile>()
+        .is_some()
+    {
+        return "unsupported-protocol-profile";
+    }
     if let Some(error) = error.downcast_ref::<SendError>() {
         return match error {
             SendError::InvalidRequest | SendError::NotSent => "write-not-submitted",
@@ -240,6 +246,8 @@ fn failure_category(error: &Failure) -> &'static str {
             Timeout => "timeout",
             Expired => "expired",
             Auth(_) => "loginlist-authentication",
+            UnsupportedProfile(_) => "unsupported-protocol-profile",
+            SessionOwned => "session-owner-conflict",
             Config => "configuration",
         };
     }
@@ -328,7 +336,7 @@ pub fn run_cli(args: &[String]) -> std::process::ExitCode {
 fn run(args: &[String]) -> Result<(), Failure> {
     let args = Arguments::parse(args)?;
     if args.mode == Mode::Help {
-        println!("Sculk experimental connection validation\n--dry-run PATH [--report NEW_PATH]: local config/key checks only; no network\n--check-config is an alias for --dry-run\n--check-room PATH: also require the selected room ID\n--preflight PATH [--report NEW_PATH]: check approved DNS/TCP or CONNECT routes without account traffic\n--live PATH [--refresh] [--read-only] [--room-info] [--listen SECONDS | --receive-one SECONDS | --send-one DELAY_SECONDS] [--report NEW_PATH]: explicitly authorized account only\nLive mode requires a terminal, account approval, and separate device-registration approval.\n--receive-one requires configured test_room_id and separate room consent; validates one fresh text without logging content or IDs.\n--read-only requests one LCHATLIST page; --room-info checks the configured room; --listen 1..300 receives events and prints counts only. --send-one requires a private test_message_file and separate room and text confirmation. It submits one historical basic WRITE after the specified delay.\nReports contain separate fixed-label milestones and booleans; never secrets, IDs or approval codes.");
+        println!("Sculk experimental connection validation\n--dry-run PATH [--report NEW_PATH]: local config/key checks only; no network\n--check-config is an alias for --dry-run\n--check-room PATH: also require the selected room ID\n--preflight PATH [--report NEW_PATH]: check approved DNS/TCP or CONNECT routes without account traffic\n--live PATH [--refresh] [--read-only] [--room-info] [--listen SECONDS | --receive-one SECONDS | --send-one DELAY_SECONDS] [--report NEW_PATH]: explicitly authorized account only\nLive mode requires a terminal, account approval, and separate device-registration approval.\n--receive-one requires configured test_room_id and separate room consent; validates one fresh text without logging content or IDs.\n--read-only requests one LCHATLIST page; --room-info checks the configured room; --listen 1..300 receives events and prints counts only. --send-one requires a private test_message_file and separate room and text confirmation. It submits one profile-specific WRITE after the specified delay.\nReports contain separate fixed-label milestones and booleans; never secrets, IDs or approval codes.");
         return Ok(());
     }
     let progress = Progress::default();
@@ -602,7 +610,7 @@ mod tests {
             .open(&key_path)
             .unwrap();
         file.write_all(key).unwrap();
-        let config = serde_json::json!({"expected_user_id":42,"email":"synthetic@example.invalid","device_file":identity,"server_key_file":key_path,"server_key_sha256":format!("{:x}",Sha256::digest(key)),"tcp_proxy_host":"127.0.0.1","tcp_proxy_port":1,"allowed_endpoints":[{"host":"booking-loco.kakao.com","port":443}],"app_version":"25.9.2","os_version":"13","api_level":"33","device_name":"SM-T870","test_room_id":42});
+        let mut config = serde_json::json!({"expected_user_id":42,"email":"synthetic@example.invalid","device_file":identity,"server_key_file":key_path,"server_key_sha256":format!("{:x}",Sha256::digest(key)),"tcp_proxy_host":"127.0.0.1","tcp_proxy_port":1,"allowed_endpoints":[{"host":"booking-loco.kakao.com","port":443}],"app_version":"25.9.2","os_version":"13","api_level":"33","device_name":"SM-T870","test_room_id":42});
         let mut file = std::fs::OpenOptions::new()
             .write(true)
             .create_new(true)
@@ -624,6 +632,29 @@ mod tests {
                 && !m.controlled_message
                 && !m.shutdown
         );
+        config["protocol_profile"] = "android-tablet".into();
+        config["profile_validated"] = true.into();
+        std::fs::write(&config_path, serde_json::to_vec(&config).unwrap()).unwrap();
+        assert!(attempt(&args, &Progress::default()).is_err());
+        config["allowed_endpoints"]
+            .as_array_mut()
+            .unwrap()
+            .push(serde_json::json!({"host":"chat.example","port":10009}));
+        std::fs::write(&config_path, serde_json::to_vec(&config).unwrap()).unwrap();
+        let prepared = Prepared::load(&config_path, &Progress::default(), true).unwrap();
+        assert!(prepared.require_validated_profile().is_err());
+        config["validated_protocol_profile"] = "android-tablet".into();
+        std::fs::write(&config_path, serde_json::to_vec(&config).unwrap()).unwrap();
+        Prepared::load(&config_path, &Progress::default(), true)
+            .unwrap()
+            .require_validated_profile()
+            .unwrap();
+        config["protocol_profile"] = "pc".into();
+        std::fs::write(&config_path, serde_json::to_vec(&config).unwrap()).unwrap();
+        let progress = Progress::default();
+        let blocked = attempt(&args, &progress).unwrap_err();
+        assert_eq!(failure_category(&blocked), "unsupported-protocol-profile");
+        assert!(!progress.milestones().https_authentication);
         assert!(!identity.exists());
         std::fs::remove_dir_all(&directory).unwrap();
     }

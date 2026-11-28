@@ -3,8 +3,11 @@ mod support;
 use bson::doc;
 use futures_util::{SinkExt, StreamExt};
 use sculk_client::{
-    messaging::{Event, Message, MessageType, ReceiveError, SendError, TextRequest},
-    read_only::RoomId,
+    messaging::{
+        Attachment, Event, Message, MessageBuilder, MessageType, ReceiveError, SendError,
+        TextRequest,
+    },
+    read_only::{OpenLinkId, RoomId, RoomMemberId},
     session::{AccessToken, Grant, RequestError, Session},
     Config, Error,
 };
@@ -26,6 +29,81 @@ fn message() -> Packet {
         "sendAt":1_700_000_000,"attachment":"{bad json preserved}","msgId":3,"prevId":0_i64,
         "supplement":"opaque", "future":{"key":1}}, "future":"retained"},
     )
+}
+
+#[test]
+fn metadata_keeps_large_ids_and_unknown_fields_and_checks_photo_alignment() {
+    let mut body = message().document().unwrap();
+    let log = body.get_document_mut("chatLog").unwrap();
+    log.insert("type", 27);
+    let extra = format!(
+        r#"{{"kl":["first","second"],"sl":[10,20],"mentions":[{{"user_id":{ID},"at":[1,3],"len":2}},{{"user_id":9007199254740993.0,"at":[2],"len":1}}],"future":{{"x":1}}}}"#
+    );
+    log.insert("attachment", extra.clone());
+    log.insert("supplement", format!(r#"{{"scope":3,"threadId":"{ID}"}}"#));
+    let msg = Message::from_packet(packet("MSG", body.clone())).unwrap();
+    let content = msg.content();
+    assert_eq!(content.raw_attachment, Some(&*extra));
+    assert_eq!(content.thread.thread.unwrap().get(), ID);
+    assert_eq!(content.thread.scope, Some(3));
+    assert_eq!(content.mentions.len(), 1);
+    assert_eq!(content.mentions[0].member.get(), ID);
+    assert_eq!(content.mentions[0].positions, [1, 3]);
+    let Some(Attachment::Photos(photos)) = content.attachment else {
+        panic!("expected photos")
+    };
+    assert_eq!(photos[1].bytes, Some(20));
+    body.get_document_mut("chatLog")
+        .unwrap()
+        .insert("attachment", r#"{"kl":["first","second"],"sl":[10]}"#);
+    let msg = Message::from_packet(packet("MSG", body)).unwrap();
+    assert!(matches!(msg.content().attachment, Some(Attachment::Opaque)));
+}
+
+#[tokio::test]
+async fn composed_quote_with_mentions_uses_one_room_bound_write() {
+    let (mut session, mut peer) = setup(8, Duration::from_secs(30)).await;
+    let (stop, cancel) = watch::channel(false);
+    let source = Message::from_packet(message()).unwrap();
+    let member = RoomMemberId::new(ID + 30).unwrap();
+    assert!(MessageBuilder::new().mention(member, "😀").build().is_err());
+    let content = MessageBuilder::new()
+        .text("literal@ ")
+        .mention(member, "홍길동")
+        .text(" and ")
+        .mention(member, "홍길동")
+        .reply_to(&source, Some(OpenLinkId::new(ID + 20).unwrap()))
+        .build()
+        .unwrap();
+    let sender = session.message_sender().unwrap();
+    assert_eq!(
+        sender
+            .send_message(RoomId::new(ID + 99).unwrap(), &content, cancel.clone())
+            .await
+            .unwrap_err(),
+        SendError::InvalidRequest
+    );
+    let (sent, ()) = tokio::join!(sender.send_message(source.room, &content, cancel), async {
+        let req = peer.next().await.unwrap().unwrap();
+        assert_eq!(req.command.as_str(), "WRITE");
+        let doc = req.document().unwrap();
+        assert_eq!(doc.get_i32("type").unwrap(), 26);
+        assert_eq!(doc.get_str("msg").unwrap(), "literal@ @홍길동 and @홍길동");
+        let extra: serde_json::Value = serde_json::from_str(doc.get_str("extra").unwrap()).unwrap();
+        assert_eq!(extra["src_logId"].as_i64(), Some(ID + 1));
+        assert_eq!(extra["src_userId"].as_i64(), Some(ID + 2));
+        assert_eq!(extra["src_linkId"].as_i64(), Some(ID + 20));
+        assert_eq!(
+            extra["mentions"][0],
+            serde_json::json!({"at":[2,3],"len":3,"user_id":ID+30})
+        );
+        let mut reply = packet("WRITE", doc! {"chatId":ID,"logId":ID+80,"sendAt":3_i64});
+        reply.id = req.id;
+        peer.send(reply).await.unwrap();
+    });
+    assert_eq!(sent.unwrap().id.get(), ID + 80);
+    drop(stop);
+    session.disconnect().await;
 }
 #[test]
 fn incoming_schema_preserves_exact_ids_content_attachments_and_unknown_metadata() {

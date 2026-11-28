@@ -12,7 +12,17 @@ pub fn expired_pair() -> (TlsSettings, TlsAcceptor) {
     make_pair(true)
 }
 fn make_pair(expired: bool) -> (TlsSettings, TlsAcceptor) {
-    let mut params = rcgen::CertificateParams::new(vec!["localhost".into()]).unwrap();
+    pair_with_names(&["localhost"], expired)
+}
+#[allow(dead_code)] // The profile connector fixture needs both service names.
+pub fn pair_with_names(names: &[&str], expired: bool) -> (TlsSettings, TlsAcceptor) {
+    let mut params = rcgen::CertificateParams::new(
+        names
+            .iter()
+            .map(|name| (*name).to_owned())
+            .collect::<Vec<_>>(),
+    )
+    .unwrap();
     if expired {
         params.not_before = rcgen::date_time_ymd(2000, 1, 1);
         params.not_after = rcgen::date_time_ymd(2001, 1, 1);

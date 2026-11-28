@@ -277,6 +277,21 @@ impl AndroidProfile {
             use_sub: true,
         }
     }
+    /// Check that the HTTP identity and the selected LOCO profile agree
+    /// before prompting for credentials or contacting the account endpoint.
+    pub fn validate_for(
+        &self,
+        profile: crate::profile::Profile,
+    ) -> Result<(), crate::connect::Error> {
+        self.validate().map_err(|_| crate::connect::Error::Config)?;
+        profile.validate_device(&self.loco_profile())?;
+        if profile == crate::profile::Profile::AndroidTablet
+            && (self.os_version != "13" || self.api_level != "33")
+        {
+            return Err(crate::profile::UnsupportedProfile.into());
+        }
+        Ok(())
+    }
     fn agent(&self) -> String {
         format!("android/{}/ko", self.app_version)
     }

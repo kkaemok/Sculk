@@ -14,6 +14,31 @@ use tokio::{
 };
 use zeroize::Zeroizing;
 
+/// Distinct, exact account identity. Room member IDs carry a separate scope.
+#[derive(Clone, Copy, PartialEq, Eq, Hash)]
+pub struct AccountId(u64);
+
+impl AccountId {
+    /// Construct from a positive account ID without a floating point conversion.
+    pub fn new(id: u64) -> Result<Self, AuthError> {
+        if id == 0 {
+            Err(AuthError::Credential)
+        } else {
+            Ok(Self(id))
+        }
+    }
+
+    /// Explicit numeric identity; do not log or transmit outside its scope.
+    pub fn get(self) -> u64 {
+        self.0
+    }
+}
+impl fmt::Debug for AccountId {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        f.write_str("AccountId([REDACTED])")
+    }
+}
+
 /// Credential with redacted Debug, no Clone, bounded size, and zeroizing storage.
 /// Provider-created copies and serialized packet buffers need separate handling.
 pub struct AccessToken {
@@ -46,6 +71,10 @@ impl AccessToken {
     /// Account identity to which the caller bound this credential.
     pub fn user_id(&self) -> u64 {
         self.user_id
+    }
+    /// Account bound to these credentials, as a typed identity.
+    pub fn account_id(&self) -> AccountId {
+        AccountId(self.user_id)
     }
     /// Known expiration on this process's monotonic clock; not a server sync token.
     pub fn expires_at(&self) -> Instant {
@@ -122,6 +151,12 @@ pub struct Session {
     state: watch::Sender<State>,
     monitor: Option<tokio::task::JoinHandle<()>>,
     deadline: Option<Instant>,
+    #[cfg(feature = "protocol-connect")]
+    profile: Option<crate::profile::Profile>,
+    #[cfg(feature = "protocol-connect")]
+    owner: Option<tokio::sync::OwnedSemaphorePermit>,
+    #[cfg(feature = "messaging")]
+    write_mode: crate::messaging::WriteMode,
 }
 struct AttemptGuard {
     client: Client,
@@ -164,7 +199,31 @@ impl Session {
             state,
             monitor: None,
             deadline: None,
+            #[cfg(feature = "protocol-connect")]
+            profile: None,
+            #[cfg(feature = "protocol-connect")]
+            owner: None,
+            #[cfg(feature = "messaging")]
+            write_mode: crate::messaging::WriteMode::Legacy,
         }
+    }
+    /// Named profile when established through a profile connector.
+    #[cfg(feature = "protocol-connect")]
+    pub fn profile(&self) -> Option<crate::profile::Profile> {
+        self.profile
+    }
+    #[cfg(feature = "protocol-connect")]
+    pub(crate) fn set_profile(
+        &mut self,
+        profile: crate::profile::Profile,
+        owner: tokio::sync::OwnedSemaphorePermit,
+    ) {
+        self.profile = Some(profile);
+        self.owner = Some(owner);
+    }
+    #[cfg(all(feature = "protocol-connect", feature = "messaging"))]
+    pub(crate) fn set_write_mode(&mut self, mode: crate::messaging::WriteMode) {
+        self.write_mode = mode;
     }
     /// Observe current state without raw diagnostics. Consumers may miss intermediate
     /// states; use this as a latest-state channel rather than an audit log.
@@ -304,18 +363,27 @@ impl Session {
         self.text_sender()?.send_text(room, text, cancel).await
     }
 
-    /// Create a text-only handle bound to this session's lifetime. It cannot
+    /// Create a message handle bound to this session's lifetime. It cannot
     /// authenticate, replace the session, renew its lease or keep it alive.
     #[cfg(feature = "messaging")]
     pub fn text_sender(&self) -> Result<crate::messaging::TextSender, crate::messaging::SendError> {
-        use crate::messaging::{SendError, TextSender};
+        self.message_sender()
+    }
+
+    /// Create a profile-aware handle to submit typed messages.
+    #[cfg(feature = "messaging")]
+    pub fn message_sender(
+        &self,
+    ) -> Result<crate::messaging::MessageSender, crate::messaging::SendError> {
+        use crate::messaging::{MessageSender, SendError};
         if self.state() != State::Authenticated {
             return Err(SendError::NotSent);
         }
-        Ok(TextSender::new(
+        Ok(MessageSender::new(
             self.client.clone(),
             self.subscribe(),
             self.deadline.ok_or(SendError::NotSent)?,
+            self.write_mode.clone(),
         ))
     }
 
@@ -346,6 +414,8 @@ impl Session {
             let _ = task.await;
         }
         let result = self.client.disconnect_checked().await;
+        #[cfg(feature = "protocol-connect")]
+        self.owner.take();
         self.state.send_replace(if result.is_ok() {
             State::Closed
         } else {
@@ -361,6 +431,8 @@ impl Session {
             let _ = task.await;
         }
         self.client.disconnect().await;
+        #[cfg(feature = "protocol-connect")]
+        self.owner.take();
         self.state.send_replace(State::Closed);
     }
 }

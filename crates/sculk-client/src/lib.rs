@@ -25,6 +25,8 @@ pub mod dial;
 pub mod managed;
 #[cfg(feature = "messaging")]
 pub mod messaging;
+#[cfg(feature = "protocol-connect")]
+pub mod profile;
 #[cfg(feature = "read-only")]
 pub mod read_only;
 #[cfg(feature = "protocol-connect")]

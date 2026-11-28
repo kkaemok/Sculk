@@ -1,8 +1,9 @@
 use crate::{ask, fail, pin_matches, ui, Failure, Progress, Stage};
 use sculk_client::{
     auth::{self, AndroidProfile, Credentials, DeviceIdentity, Limits, Provider},
-    connect::{self, BookingSchema, DeviceProfile, Endpoint, Options, Protection},
+    connect::{self, Endpoint},
     dial::{ConnectProxy, DirectTcp},
+    profile::{Connector, Profile, Settings},
     read_only::RoomId,
     session::Session,
     tls::{TlsSettings, TrustStore},
@@ -37,6 +38,8 @@ struct Configuration {
     test_room_id: Option<i64>,
     test_message_file: Option<PathBuf>,
     profile_validated: bool,
+    protocol_profile: Option<String>,
+    validated_protocol_profile: Option<String>,
     credential_age_seconds: Option<u64>,
 }
 
@@ -116,7 +119,7 @@ impl Configuration {
 pub struct Prepared {
     config: Configuration,
     profile: AndroidProfile,
-    options: Options,
+    connector: Connector,
     route: Route,
     room: Option<RoomId>,
     existing_identity: bool,
@@ -132,8 +135,7 @@ pub struct Approved {
 pub struct Authorized {
     credentials: Credentials,
     device: Zeroizing<String>,
-    profile: DeviceProfile,
-    options: Options,
+    connector: Connector,
     route: Route,
     _device_lock: std::fs::File,
 }
@@ -141,6 +143,12 @@ pub struct Authorized {
 impl Prepared {
     pub fn load(path: &Path, progress: &Progress, require_room: bool) -> Result<Self, Failure> {
         let config = Configuration::read(path)?;
+        let selected = config
+            .protocol_profile
+            .as_deref()
+            .map(str::parse::<Profile>)
+            .transpose()?
+            .unwrap_or_default();
         let mut issues = Vec::new();
         if config.expected_user_id == 0
             || config.expected_user_id > i64::MAX as u64
@@ -158,6 +166,20 @@ impl Prepared {
         };
         if profile.validate().is_err() {
             issues.push("client profile (app_version, os_version, api_level and device_name)");
+        } else {
+            if profile.validate_for(selected).is_err() {
+                eprintln!("android-tablet requires the documented app_version 25.9.2, os_version 13 and api_level 33 for the owner-authorized device");
+                return Err(sculk_client::profile::UnsupportedProfile.into());
+            }
+        }
+        if config
+            .validated_protocol_profile
+            .as_deref()
+            .map(str::parse::<Profile>)
+            .transpose()?
+            .is_some_and(|validated| validated != selected)
+        {
+            issues.push("validated_protocol_profile must match protocol_profile");
         }
         if !config.device_file.is_absolute() {
             issues.push("absolute device_file path");
@@ -186,6 +208,14 @@ impl Prepared {
             .is_ok_and(|endpoints| endpoints.contains(&booking))
         {
             issues.push("authorized allowed_endpoints including Booking");
+        }
+        if let Some(port) = selected.chat_tls_port() {
+            if !endpoints
+                .as_ref()
+                .is_ok_and(|routes| routes.iter().any(|route| route.port() == port))
+            {
+                issues.push("authorized assigned chat endpoint on port 10009 for android-tablet");
+            }
         }
         if config
             .credential_age_seconds
@@ -229,12 +259,8 @@ impl Prepared {
             Err(error) if error.kind() == io::ErrorKind::NotFound => false,
             Err(_) => return Err(fail("device identity could not be inspected")),
         };
-        println!("device-identity-present={existing_identity} owner-profile-validation-recorded={} room-configured={}", config.profile_validated, room.is_some());
-        let options = Options {
+        let settings = Settings {
             booking,
-            booking_schema: BookingSchema::AgentMessenger,
-            checkin: Protection::LocoGcm(key.clone()),
-            chat: Protection::LocoGcm(key),
             tls: TlsSettings::with_roots(trust),
             transport: Config {
                 request_timeout: Duration::from_secs(5),
@@ -244,25 +270,34 @@ impl Prepared {
             total_timeout: Duration::from_secs(60),
             session_lease: Duration::from_secs(86400),
         };
-        Ok(Self {
+        let connector = Connector::new(selected, profile.loco_profile(), key, settings)?;
+        let prepared = Self {
             config,
             profile,
-            options,
+            connector,
             route,
             room,
             existing_identity,
-        })
+        };
+        println!("protocol-profile={selected} device-identity-present={existing_identity} owner-profile-validation-recorded={} room-configured={}", prepared.profile_validated(), room.is_some());
+        Ok(prepared)
     }
 
     pub fn room(&self) -> Option<RoomId> {
         self.room
     }
 
+    fn profile_validated(&self) -> bool {
+        self.config.profile_validated
+            && (self.connector.profile() == Profile::AndroidLegacy
+                || self.config.validated_protocol_profile.is_some())
+    }
+
     pub fn require_validated_profile(&self) -> Result<(), Failure> {
-        if self.config.profile_validated {
+        if self.profile_validated() {
             Ok(())
         } else {
-            Err(fail("continuous operation requires an owner-validated client profile and approved room (profile_validated)"))
+            Err(fail("continuous operation requires an owner-validated client profile and approved room (profile_validated and, for tablet, validated_protocol_profile)"))
         }
     }
 
@@ -413,8 +448,7 @@ impl Prepared {
         Ok(Authorized {
             credentials,
             device: Zeroizing::new(provider.device_uuid().to_owned()),
-            profile: provider.loco_profile(),
-            options: self.options,
+            connector: self.connector,
             route: self.route,
             _device_lock: device_lock,
         })
@@ -472,18 +506,12 @@ impl Authorized {
                 _ => connect::Error::Config,
             })?;
         let session = self
-            .options
-            .connect(
-                &self.profile,
-                token,
-                &self.device,
-                cancel.clone(),
-                |stage, endpoint| {
-                    progress.protocol_enter(stage);
-                    println!("protocol/{}", progress.stage.get().label());
-                    self.route.dial(endpoint, cancel.clone())
-                },
-            )
+            .connector
+            .connect(token, &self.device, cancel.clone(), |stage, endpoint| {
+                progress.protocol_enter(stage);
+                println!("protocol/{}", progress.stage.get().label());
+                self.route.dial(endpoint, cancel.clone())
+            })
             .await?;
         progress.completed(Stage::Loginlist);
         println!("protocol/account-identity-verified");

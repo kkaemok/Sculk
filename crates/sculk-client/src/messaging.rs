@@ -4,9 +4,17 @@
 //! packets and malformed known events retain their original validated BSON.
 use crate::{read_only::RoomId, session::State};
 use bson::raw::{RawBsonRef, RawDocument};
-use sculk_protocol::{Command, Packet};
+use sculk_protocol::Packet;
 use tokio::sync::{broadcast, watch};
 use tokio::time::Instant;
+
+mod builder;
+mod content;
+mod write;
+pub use builder::{MessageBuilder, OutgoingMessage};
+pub use content::{Attachment, Media, Mention, MessageContent, ThreadMetadata};
+pub(crate) use write::WriteMode;
+pub use write::{MessageSender, SendError, TextReceipt, TextRequest, TextSender};
 
 macro_rules! identifier {
     ($name:ident) => {
@@ -51,10 +59,24 @@ pub enum MessageType {
     Video,
     /// Audio, type 5.
     Audio,
+    /// Digital-item emoticon, type 6.
+    Emoticon,
+    /// Historical KakaoLink v1 card, type 9. Payload remains opaque.
+    RichLink,
+    /// Sticker, type 12.
+    Sticker,
     /// File, type 18.
     File,
+    /// Animated sticker, type 20.
+    AnimatedSticker,
+    /// Actioncon, type 22.
+    Actioncon,
+    /// GIF sticker, type 25.
+    GifSticker,
     /// Reply, type 26; attachment remains opaque.
     Reply,
+    /// Group of photos, type 27.
+    MultiPhoto,
     /// Other raw type, including deleted-message flags.
     Unknown(i32),
 }
@@ -67,8 +89,15 @@ impl MessageType {
             Self::Photo => 2,
             Self::Video => 3,
             Self::Audio => 5,
+            Self::Emoticon => 6,
+            Self::RichLink => 9,
+            Self::Sticker => 12,
             Self::File => 18,
+            Self::AnimatedSticker => 20,
+            Self::Actioncon => 22,
+            Self::GifSticker => 25,
             Self::Reply => 26,
+            Self::MultiPhoto => 27,
             Self::Unknown(value) => value,
         }
     }
@@ -81,8 +110,15 @@ impl From<i32> for MessageType {
             2 => Self::Photo,
             3 => Self::Video,
             5 => Self::Audio,
+            6 => Self::Emoticon,
+            9 => Self::RichLink,
+            12 => Self::Sticker,
             18 => Self::File,
+            20 => Self::AnimatedSticker,
+            22 => Self::Actioncon,
+            25 => Self::GifSticker,
             26 => Self::Reply,
+            27 => Self::MultiPhoto,
             n => Self::Unknown(n),
         }
     }
@@ -439,192 +475,4 @@ impl Events {
             }
         }
     }
-}
-
-/// Encoder for the historical basic text WRITE request.
-pub struct TextRequest {
-    room: RoomId,
-    text: String,
-}
-/// Text/receipt failures distinguish explicit rejection and ambiguous delivery.
-#[derive(Debug, PartialEq, Eq, thiserror::Error)]
-pub enum SendError {
-    /// Local input failed before serialization; nothing sent by this builder.
-    #[error("invalid text request")]
-    InvalidRequest,
-    /// Admission/authentication refused before writing.
-    #[error("text request was not sent")]
-    NotSent,
-    /// Nonzero header/BSON status, preserved without speculative interpretation.
-    #[error("text request rejected with status {0}")]
-    Rejected(i64),
-    /// Deadline exceeded after submission. Never automatically resend.
-    #[error("text request timed out; delivery unknown; do not automatically resend")]
-    TimeoutUnknown,
-    /// Connection loss, expiry or malformed/mismatched acknowledgment after
-    /// submission; absence of evidence is not evidence that nothing was sent.
-    #[error("text delivery unknown; do not automatically resend")]
-    DeliveryUnknown,
-}
-impl TextRequest {
-    /// Local policy: nonempty text, at most 16 KiB UTF-8, no NUL. This is not a
-    /// researched server message-length limit. No splitting or bulk sending.
-    pub fn new(room: RoomId, text: String) -> Result<Self, SendError> {
-        validate_text(&text)?;
-        Ok(Self { room, text })
-    }
-    /// Encode Agent Messenger's historical basic text profile: chatId:Int64, msg:String,
-    /// type:Int32(1), noSeen:false. No synthetic client msgId or attachment.
-    pub fn packet(&self) -> Result<Packet, SendError> {
-        Packet::from_document(
-            0,
-            Command::new("WRITE").expect("constant command"),
-            &bson::doc! {"chatId":self.room.get(), "msg":&self.text, "type":1, "noSeen":false},
-        )
-        .map_err(|_| SendError::InvalidRequest)
-    }
-    /// Interpret one caller-submitted request's result. Acknowledgment is not proof
-    /// of recipient delivery/read. Never retries. Node's flat WRITE acknowledgment
-    /// is supported; the optional chatLog variant needs further fixture evidence.
-    pub fn outcome(
-        &self,
-        result: Result<Packet, crate::session::RequestError>,
-    ) -> Result<TextReceipt, SendError> {
-        use crate::{session::RequestError, Error};
-        let packet = result.map_err(|e| match e {
-            RequestError::Unauthenticated
-            | RequestError::Transport(
-                Error::Overloaded | Error::Config | Error::AuthenticationUnavailable,
-            ) => SendError::NotSent,
-            RequestError::Transport(Error::Rejected(n)) => SendError::Rejected(i64::from(n as i16)),
-            RequestError::Transport(Error::Timeout) => SendError::TimeoutUnknown,
-            _ => SendError::DeliveryUnknown,
-        })?;
-        let parse = || -> Result<TextReceipt, InvalidMessage> {
-            if packet.command.as_str() != "WRITE" {
-                return Err(InvalidMessage);
-            }
-            let doc = body(&packet)?;
-            fields(doc)?;
-            let room = RoomId::new(integer(doc, "chatId")?).map_err(|_| InvalidMessage)?;
-            if room != self.room {
-                return Err(InvalidMessage);
-            }
-            let id = MessageId::new(integer(doc, "logId")?)?;
-            let sent_at_seconds = integer(doc, "sendAt")?;
-            if sent_at_seconds < 0 {
-                return Err(InvalidMessage);
-            }
-            // Additional node-kakao fields are optional across source profiles.
-            for key in ["msgId", "prevId"] {
-                if value(doc, key)?.is_some() {
-                    integer(doc, key)?;
-                }
-            }
-            Ok(TextReceipt {
-                room,
-                id,
-                sent_at_seconds,
-            })
-        };
-        if packet.command.as_str() != "WRITE" {
-            return Err(SendError::DeliveryUnknown);
-        }
-        if packet.status != 0 {
-            return Err(SendError::Rejected(i64::from(packet.status as i16)));
-        }
-        let doc = body(&packet).map_err(|_| SendError::DeliveryUnknown)?;
-        fields(doc).map_err(|_| SendError::DeliveryUnknown)?;
-        if value(doc, "status")
-            .map_err(|_| SendError::DeliveryUnknown)?
-            .is_some()
-        {
-            let status = integer(doc, "status").map_err(|_| SendError::DeliveryUnknown)?;
-            if status != 0 {
-                return Err(SendError::Rejected(status));
-            }
-        }
-        parse().map_err(|_| SendError::DeliveryUnknown)
-    }
-}
-impl std::fmt::Debug for TextRequest {
-    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        f.write_str("TextRequest([REDACTED])")
-    }
-}
-/// Text-only handle to one authenticated session. The owning session controls
-/// shutdown and expiration even when a handle is retained by an application.
-pub struct TextSender {
-    client: crate::Client,
-    state: watch::Receiver<State>,
-    deadline: Instant,
-}
-
-impl TextSender {
-    pub(crate) fn new(
-        client: crate::Client,
-        state: watch::Receiver<State>,
-        deadline: Instant,
-    ) -> Self {
-        Self {
-            client,
-            state,
-            deadline,
-        }
-    }
-
-    /// Submit once, correlate the reply and require a room-bound acknowledgment.
-    /// Cancelling after admission conservatively returns unknown delivery.
-    pub async fn send_text(
-        &self,
-        room: RoomId,
-        text: &str,
-        mut cancel: watch::Receiver<bool>,
-    ) -> Result<TextReceipt, SendError> {
-        validate_text(text)?;
-        if *cancel.borrow()
-            || cancel.has_changed().is_err()
-            || *self.state.borrow() != State::Authenticated
-            || self.deadline <= Instant::now()
-            || self.client.state() != crate::ConnectionState::Connected
-        {
-            return Err(SendError::NotSent);
-        }
-        let request = TextRequest {
-            room,
-            text: text.to_owned(),
-        };
-        let packet = request.packet()?;
-        if *cancel.borrow() || cancel.has_changed().is_err() {
-            return Err(SendError::NotSent);
-        }
-        let response = self.client.submit(packet).map_err(|_| SendError::NotSent)?;
-        tokio::select! { biased;
-            _ = crate::recovery::cancelled(&mut cancel) => Err(SendError::DeliveryUnknown),
-            result = tokio::time::timeout_at(self.deadline, response) => {
-                request.outcome(
-                    result.unwrap_or(Err(crate::Error::Timeout))
-                        .map_err(crate::session::RequestError::Transport),
-                )
-            }
-        }
-    }
-}
-
-fn validate_text(text: &str) -> Result<(), SendError> {
-    if text.is_empty() || text.len() > 16384 || text.contains('\0') {
-        return Err(SendError::InvalidRequest);
-    }
-    Ok(())
-}
-
-/// Server acknowledgment subset; no end-to-end receipt or exactly-once guarantee.
-#[derive(Debug, PartialEq, Eq)]
-pub struct TextReceipt {
-    /// Requested room, validated against the response.
-    pub room: RoomId,
-    /// Assigned server log ID.
-    pub id: MessageId,
-    /// Server timestamp in Unix seconds.
-    pub sent_at_seconds: i64,
 }

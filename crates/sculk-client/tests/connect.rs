@@ -6,6 +6,7 @@ use futures_util::{SinkExt, StreamExt};
 use rsa::{pkcs1::EncodeRsaPublicKey, pkcs8::DecodePrivateKey, PrivateKey};
 use sculk_client::{
     connect::{self, Booking, BookingSchema, DeviceProfile, Endpoint, Options, Protection, Stage},
+    profile::{Connector, Profile, Settings},
     records::SecureStream,
     session::{AccessToken, AuthError, State},
     Config,
@@ -72,6 +73,239 @@ fn options(tls: sculk_client::tls::TlsSettings) -> Options {
         total_timeout: Duration::from_secs(5),
         session_lease: Duration::from_secs(30),
     }
+}
+fn settings(tls: sculk_client::tls::TlsSettings) -> Settings {
+    let options = options(tls);
+    Settings {
+        booking: options.booking,
+        tls: options.tls,
+        transport: options.transport,
+        stage_timeout: options.stage_timeout,
+        total_timeout: options.total_timeout,
+        session_lease: options.session_lease,
+    }
+}
+
+fn tablet_device() -> DeviceProfile {
+    DeviceProfile {
+        os: "android".into(),
+        app_version: "25.9.2".into(),
+        use_sub: true,
+        ..profile()
+    }
+}
+
+#[test]
+fn named_profiles_reject_inconsistent_provider_metadata() {
+    assert!("pc".parse::<Profile>().is_err());
+    let (tls, _) = support::tls_pair();
+    assert!(matches!(
+        Connector::new(
+            Profile::AndroidTablet,
+            profile(),
+            key(),
+            settings(tls.clone())
+        ),
+        Err(connect::Error::UnsupportedProfile(_))
+    ));
+    let mut device = tablet_device();
+    device.app_version = "26.2.0".into();
+    assert!(matches!(
+        Connector::new(Profile::AndroidTablet, device, key(), settings(tls.clone())),
+        Err(connect::Error::UnsupportedProfile(_))
+    ));
+    assert_eq!(
+        Connector::new(
+            Profile::AndroidTablet,
+            tablet_device(),
+            key(),
+            settings(tls)
+        )
+        .unwrap()
+        .profile(),
+        Profile::AndroidTablet,
+    );
+}
+
+#[cfg(feature = "messaging")]
+async fn tablet_round(
+    connector: &Connector,
+    acceptor: tokio_rustls::TlsAcceptor,
+    valid_name: bool,
+    lose_write: bool,
+) -> Option<i64> {
+    use sculk_client::{messaging::SendError, read_only::RoomId};
+    let (bclient, bserver) = duplex(16384);
+    let (cclient, cserver) = duplex(16384);
+    let (lclient, lserver) = duplex(16384);
+    let mut streams = VecDeque::from([bclient, cclient, lclient]);
+    let booking_tls = acceptor.clone();
+    let booking = async move {
+        let mut peer = Framed::new(
+            booking_tls.accept(bserver).await.unwrap(),
+            LocoCodec::default(),
+        );
+        let request = peer.next().await.unwrap().unwrap();
+        assert_eq!(request.command.as_str(), "GETCONF");
+        assert_eq!(
+            request.document().unwrap(),
+            doc! {"os":"android","model":""}
+        );
+        let mut reply = fixture(include_bytes!(
+            "../../../tests/fixtures/agent-getconf-response.bin"
+        ));
+        reply.id = request.id;
+        peer.send(reply).await.unwrap();
+        assert!(peer.next().await.is_none());
+    };
+    let checkin = async move {
+        let mut peer = Framed::new(server_secure(cserver).await, LocoCodec::default());
+        let request = peer.next().await.unwrap().unwrap();
+        assert_eq!(request.command.as_str(), "CHECKIN");
+        let body = request.document().unwrap();
+        assert_eq!(body.get_i64("userId"), Ok(42));
+        assert_eq!(body.get_bool("useSub"), Ok(true));
+        let mut reply = fixture(include_bytes!(
+            "../../../tests/fixtures/agent-checkin-response.bin"
+        ));
+        reply.id = request.id;
+        peer.send(reply).await.unwrap();
+        assert!(peer.next().await.is_none());
+    };
+    let chat = async move {
+        let stream = acceptor.accept(lserver).await;
+        if !valid_name {
+            assert!(stream.is_err());
+            return None;
+        }
+        let stream = stream.unwrap();
+        assert_eq!(stream.get_ref().1.server_name(), Some("kakao.com"));
+        let mut peer = Framed::new(stream, LocoCodec::default());
+        let request = peer.next().await.unwrap().unwrap();
+        assert_eq!(request.command.as_str(), "LOGINLIST");
+        let body = request.document().unwrap();
+        assert_eq!(body.get_bool("isSw"), Ok(false));
+        assert_eq!(body.get_str("duuid"), Ok("synthetic-device"));
+        let mut reply = fixture(include_bytes!(
+            "../../../tests/fixtures/agent-loginlist-response.bin"
+        ));
+        reply.id = request.id;
+        peer.send(reply).await.unwrap();
+        let request = peer.next().await.unwrap().unwrap();
+        assert_eq!(request.command.as_str(), "WRITE");
+        let body = request.document().unwrap();
+        assert_eq!(body.get_i32("scope"), Ok(1));
+        assert_eq!(body.get_bool("silence"), Ok(false));
+        assert_eq!(body.get_bool("noSeen"), Ok(false));
+        assert_eq!(body.get_str("extra"), Ok("{}"));
+        assert_eq!(body.get_i64("chatId"), Ok(42));
+        let id = body.get_i64("msgId").unwrap();
+        assert!((1..=i64::from(i32::MAX)).contains(&id));
+        if !lose_write {
+            let mut reply = packet(
+                "WRITE",
+                doc! {"status":0,"chatId":42_i64,"logId":54_i64,"sendAt":19_i64},
+            );
+            reply.id = request.id;
+            peer.send(reply).await.unwrap();
+            assert!(peer.next().await.is_none());
+        }
+        Some(id)
+    };
+    let (_tx, cancel) = watch::channel(false);
+    let client = async {
+        let session = connector
+            .connect(
+                token(),
+                "synthetic-device",
+                cancel.clone(),
+                |stage, endpoint| {
+                    assert_eq!(
+                        match stage {
+                            Stage::Booking => ("localhost", 443),
+                            Stage::Checkin => ("checkin.example", 995),
+                            Stage::Login => ("chat.example", 10009),
+                        },
+                        (endpoint.host(), endpoint.port())
+                    );
+                    let stream = streams
+                        .pop_front()
+                        .expect("no extra dial or transport fallback");
+                    async { Ok(stream) }
+                },
+            )
+            .await;
+        if !valid_name {
+            assert!(matches!(
+                session,
+                Err(connect::Error::Tls(sculk_client::tls::Error::Handshake))
+            ));
+            return;
+        }
+        let mut session = session.unwrap();
+        assert_eq!(session.profile(), Some(Profile::AndroidTablet));
+        let duplicate = connector
+            .connect(
+                token(),
+                "synthetic-device",
+                cancel.clone(),
+                |_, _| -> std::future::Ready<std::io::Result<DuplexStream>> {
+                    panic!("a second owner must fail before dialing")
+                },
+            )
+            .await;
+        assert!(matches!(duplicate, Err(connect::Error::SessionOwned)));
+        let result = session
+            .send_text(RoomId::new(42).unwrap(), "test", cancel)
+            .await;
+        if lose_write {
+            assert_eq!(result.unwrap_err(), SendError::DeliveryUnknown);
+        } else {
+            assert_eq!(result.unwrap().id.get(), 54);
+            session.disconnect_checked().await.unwrap();
+        }
+        assert!(streams.is_empty());
+    };
+    let ((), (), id, ()) = timeout(Duration::from_secs(6), async {
+        tokio::join!(booking, checkin, chat, client)
+    })
+    .await
+    .unwrap();
+    id
+}
+
+#[cfg(feature = "messaging")]
+#[tokio::test]
+async fn tablet_uses_verified_tls_profile_write_and_unknown_delivery_across_generations() {
+    let (tls, acceptor) = support::pair_with_names(&["localhost", "kakao.com"], false);
+    let connector = Connector::new(
+        Profile::AndroidTablet,
+        tablet_device(),
+        key(),
+        settings(tls),
+    )
+    .unwrap();
+    let first = tablet_round(&connector, acceptor.clone(), true, true)
+        .await
+        .unwrap();
+    let second = tablet_round(&connector, acceptor, true, false)
+        .await
+        .unwrap();
+    assert_ne!(first, second);
+}
+
+#[cfg(feature = "messaging")]
+#[tokio::test]
+async fn tablet_wrong_service_name_fails_before_login_without_fallback() {
+    let (tls, acceptor) = support::tls_pair();
+    let connector = Connector::new(
+        Profile::AndroidTablet,
+        tablet_device(),
+        key(),
+        settings(tls),
+    )
+    .unwrap();
+    assert_eq!(tablet_round(&connector, acceptor, false, false).await, None);
 }
 async fn server_secure(mut stream: DuplexStream) -> SecureStream<DuplexStream> {
     let mut wire = [0; 268];
