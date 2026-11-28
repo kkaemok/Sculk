@@ -12,6 +12,7 @@
   "os_version": "",
   "api_level": "",
   "device_name": "",
+  "protocol_profile": "android-legacy",
   "test_room_id": 0,
   "profile_validated": false
 }

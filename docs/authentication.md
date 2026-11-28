@@ -8,6 +8,11 @@ as a live login.
 
 ## Provider behavior
 
+`protocol_profile` selects `android-legacy` (default) or `android-tablet`.
+The offline check validates the selected profile and its route prerequisites
+before any password prompt. The same profile drives login, session transport
+and WRITE. [Profile requirements and owner checks](advanced-compatibility.md).
+
 The fixed HTTPS origin is `https://katalk.kakao.com/android/account/`. The
 provider uses ordinary certificate/name validation, system roots (including
 supported SSL_CERT_FILE/SSL_CERT_DIR configuration), inherited HTTP(S) proxies,
@@ -134,9 +139,10 @@ recovery path.
    before another explicit attempt; do not cycle versions, UUIDs or transport modes.
 
 A changing assigned endpoint must pass both configured network policy and the
-operator's allowlist; update only after verifying its provenance. TLS validates
-its requested endpoint name; GCM requires the configured trusted RSA key and
-valid authenticated records. There is no opportunistic downgrade.
+operator's allowlist. Verify its provenance before updating that list. Booking
+TLS checks the endpoint name. Tablet chat TLS checks the profile's fixed
+`kakao.com` service name on the assigned host and its approved port 10009.
+GCM requires the configured trusted RSA key and valid authenticated records.
 
 ## What remains unverified or intentionally absent
 

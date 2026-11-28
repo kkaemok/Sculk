@@ -61,7 +61,8 @@ The crates have no Android, desktop, Docker, Node, Python, browser, database, or
 external service requirement. The optional protocol connector accepts already-authorized credentials;
 account/device acquisition is available through the experimental android-auth provider; **never pass raw TCP carrying account tokens** to the
 experimental low-level client. The opt-in `sculk-auth-client` example provides
-owner-controlled live validation; it remains live-unverified.
+owner-controlled live validation for the legacy GCM and tablet TLS profiles.
+Both profiles are covered by local fixtures. [Profile selection and evidence](docs/advanced-compatibility.md).
 
 [Verification](docs/verification.md) · [Architecture](docs/architecture.md) · [Performance](docs/performance.md) ·
 [Contributing](CONTRIBUTING.md) · [Security](SECURITY.md) · [Changelog](CHANGELOG.md)
@@ -154,11 +155,14 @@ MSG packets preserve raw evidence, with content-redacted Debug output.
 Messages expose exact typed room/sender/log IDs, Unix-second timestamps, source-backed
 message types, borrowed text/attachment strings and the original metadata packet.
 Feed content remains opaque; no join/kick action is inferred from feedType.
+`Message::content()` decodes optional media, mention, quote and thread metadata
+on demand.
 
 `TextRequest` encodes one source-profile text WRITE and classifies a caller-submitted
 response as acknowledgment, rejection, timeout with unknown delivery, or other
-unknown delivery. Session::send_text and SessionSource::text_outbound
-submit the historical basic WRITE profile through the active session.
+unknown delivery. `Session::send_text` and `SessionSource::text_outbound`
+use the authenticated session's WRITE profile. The Rust `MessageBuilder`
+can also compose mentions and same-room replies.
 The owner CLI also supports a separately confirmed --send-one operation.
 Reconcile ambiguous outcomes before any further attempt.
 [Messaging and verification](docs/messaging.md).

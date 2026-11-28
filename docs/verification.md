@@ -1,5 +1,47 @@
 # Verification record
 
+## Android tablet and typed messaging — 2026-11-28
+
+Baseline `ff170b4dbb9e8d836ff2132eaefbffaa1092ceca`. Checks ran on
+x86-64 GNU/Linux with Rust 1.100.0.
+
+| Check | Result |
+| --- | --- |
+| Formatting, all-target all-feature Clippy with warnings denied, all-feature rustdoc and locked release build | Passed |
+| Locked default workspace tests | 141 passed |
+| Locked all-feature workspace tests | 215 passed |
+| Isolated `sculk-client/android-auth` feature build | Passed |
+| Named profile workflow with local TLS and synthetic GCM peer | Verified route, service name, LOGINLIST fields, one session owner, shutdown, cross-generation message ID and ambiguous WRITE |
+| Profile and endpoint checks with private synthetic configuration | Verified default legacy behavior, tablet route requirement, matching profile attestation and unsupported profile failure before authentication |
+| Typed messaging, room list and member snapshots | Verified exact large IDs, quote/mention submission, raw metadata, multi-photo alignment, bounded cursor traversal and changed membership rejection |
+| Release executable smoke | Initialized a project, checked the script and returned `Pong!` offline |
+
+```sh
+cargo fmt --all -- --check
+cargo clippy --workspace --all-targets --all-features --locked -- -D warnings
+cargo test --workspace --locked
+cargo test --workspace --all-features --locked
+cargo check -p sculk-client --no-default-features --features android-auth --locked
+cargo build --workspace --release --all-features --locked
+cargo doc --workspace --all-features --no-deps --locked
+cargo bench -p sculk-client --features messaging --bench events --locked
+scripts/benchmark-storage.sh target/release/sculk
+scripts/benchmark-storage.sh target/release/sculk --trace
+```
+
+The loopback event stress test at 32 slots measured roughly 1.24 million
+packets/s at 512 text bytes and 0.30 million packets/s at 16 KiB. It intentionally
+fills the bounded ring. The executable processed 2,000 offline SQLite counter
+commands in 0.090 s with individual commits and 0.022 s with opt-in groups of
+32, then verified the persisted counter after restart. The separate
+`strace` run counted 8,004 versus 256 `fsync` calls and took 2.963 s versus
+0.234 s with tracer overhead. These are single-host observations on the
+workspace filesystem. [Performance and durability](performance.md).
+
+KakaoTalk, Oracle service startup, AArch64 performance and 24-hour stability
+remain unverified for this revision. The owner procedure and the profile-specific
+limitations are recorded in the protocol matrix. [Profiles and evidence](advanced-compatibility.md).
+
 ## Phase 5 — 2026-10-26
 
 | Check | Outcome |

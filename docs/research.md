@@ -1,5 +1,8 @@
 # Research record
 
+The November 28, 2026 refresh includes the current protocol profile and operation
+matrix, source revisions, and offline verification. [Advanced compatibility](advanced-compatibility.md).
+
 Inspected 2026-10-24. Each repository was fetched with a shallow HTTPS clone.
 Dates below are the fetched HEAD commit dates, not an assertion of active support.
 No third-party application was executed and no live KakaoTalk session was tested.

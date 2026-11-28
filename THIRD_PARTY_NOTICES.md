@@ -6,7 +6,7 @@ Agent Messenger and OpenKakao. They are not personal credentials or live traffic
 The key fixture is not an automatically trusted production default.
 
 Agent Messenger: https://github.com/agent-messenger/agent-messenger
-Snapshot: 9d2de96a43fe3e0e172e8e399454c475146a2697
+Snapshots: 9d2de96a43fe3e0e172e8e399454c475146a2697 and c2e5368a0b3396aa4e29774d9c01f927f7aadc92
 
 MIT License
 

@@ -56,7 +56,9 @@ confirmed send in the approved test room. Run the exact trigger test before
 approving scripts for continuous use. Complete any legitimate device
 confirmation interactively before service startup. Only after live testing
 of the exact profile and route, record the owner decision with
-profile_validated = true. [Owner validation commands](authentication.md).
+`"profile_validated": true`. For `android-tablet` also record
+`"validated_protocol_profile": "android-tablet"`.
+[Owner validation commands](authentication.md).
 
 ## Install and start the service
 

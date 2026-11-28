@@ -50,17 +50,17 @@ actions; unknown commands such as KICKOUT stay raw.
 The typed MSG subset requires outer chatId and nested chatLog with logId, authorId,
 type and sendAt. Text type 1 requires a message string; empty incoming text is
 preserved. Optional outer logId/nested chatId must agree when present. Message
-attachments, supplementary fields and unknown metadata are preserved; no JSON
-attachment schema, title, identity or missing value is fabricated. Resource bounds
+attachments, supplementary fields and unknown metadata are preserved. Resource bounds
 are the framing limit (1 MiB) and at most 128 fields in each top/log container.
 These are local safety policies, not researched server limits.
 
-Type-26 messages expose quote metadata through Message::quote on demand.
-The historical JSON subset preserves exact source IDs, the source wire type,
-preview text and the optional distinct OpenChat link ID. Malformed or
-oversized extensions fail explicitly while the original attachment remains
-available. Outbound quoted replies require a compatible profile and remain
-unsupported.
+`Message::quote()` decodes the historical type-26 JSON subset on demand.
+`Message::content()` additionally decodes mentions, thread metadata, photo,
+video, audio, file, multi-photo and sticker metadata. A historical KakaoLink
+type is recognized, with the original payload available for inspection.
+Optional metadata is bounded to 32 KiB per JSON string. The original
+attachment, supplement and BSON remain available when decoding fails or fields
+are unknown. Media keys, URLs and display names are untrusted content.
 
 ## Text request foundation
 
@@ -76,7 +76,7 @@ noSeen:false}`. Older node-kakao requests add client msgId and default noSeen=tr
 Sculk does not blend these profiles or claim current server acceptance. Input
 policy allows 1..16384 UTF-8 bytes with no NUL; messages are never split.
 
-An owner-authorized application can submit this historical profile once:
+An owner-authorized application can submit text using the session's profile:
 
 ```rust,no_run
 use sculk_client::{messaging::{SendError, TextReceipt}, read_only::RoomId, session::Session};
@@ -89,13 +89,50 @@ async fn send(session: &Session, room: RoomId, cancel: watch::Receiver<bool>)
 }
 ```
 
-`Session::text_sender()` provides a text-only handle. Admission checks
+`Session::text_sender()` and `Session::message_sender()` provide handles to the
+same sender. Admission checks
 authentication and lease, cancellation and capacity. Once admitted, a
 cancellation can return unknown delivery even when the driver discards the
 queued request before writing. A dropped call cannot undo a write. A sender
-handle becomes unusable when its session closes or expires. The basic request
-does not select or negotiate a newer WRITE profile. See the
-[reference refresh](research.md#reference-refresh-on-2026-11-21).
+handle becomes unusable when its session closes or expires. The tablet profile
+adds a client message ID, scope and other source-backed headers to its WRITE.
+Those IDs persist across reconnects within a connection owner and do not
+provide a durable idempotency key. [Protocol profiles](advanced-compatibility.md).
+
+## Compose a reply and mention
+
+```rust,no_run
+use sculk_client::{
+    messaging::{Message, MessageBuilder, SendError, TextReceipt},
+    read_only::{OpenLinkId, RoomMemberId},
+    session::Session,
+};
+use tokio::sync::watch;
+
+async fn reply(
+    session: &Session,
+    source: &Message,
+    member: RoomMemberId,
+    open_link: Option<OpenLinkId>,
+    cancel: watch::Receiver<bool>,
+) -> Result<TextReceipt, SendError> {
+    let message = MessageBuilder::new()
+        .text("Thanks, ")
+        .mention(member, "홍길동")
+        .text("!")
+        .reply_to(source, open_link)
+        .build()?;
+    session.message_sender()?.send_message(source.room, &message, cancel).await
+}
+```
+
+Use a room-scoped member ID from the destination room and an independently
+verified OpenChat link when applicable. The builder rejects cross-room
+quotation and limits mention names to the BMP because the wire length of
+other names is unverified. IDs stay exact in BSON and JSON. Existing scripts
+continue to use the same command dispatch and text outbound. Media and
+sticker sends, reactions, thread sends and rich-card composition require
+further protocol evidence and owner validation.
 
 For a Rust or script bot, pass `SessionSource::select` an authenticated
 session and an authorized room. The adapter verifies `CHATINFO`, filters

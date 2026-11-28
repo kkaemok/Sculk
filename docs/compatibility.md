@@ -7,7 +7,7 @@ managed recovery and durable checkpoints. Local TLS peers verify source-shaped
 GETCONF, CHECKIN, LOGINLIST, CHATINFO, SYNCMSG, MSG and WRITE paths and
 generation changes. The real service's profile, watermark and predecessor
 behavior still require owner validation. [Runtime](runtime.md) ·
-[Owner checks](authentication.md).
+[Owner checks](authentication.md) · [Protocol profiles and evidence](advanced-compatibility.md).
 
 ## Current implementation
 
@@ -20,13 +20,13 @@ unverified. The table below records implementation and evidence separately.
 |---|---|---|---|
 | GETCONF | Device metadata → Checkin host/port candidates | Historical Agent-style Booking over verified TLS | Offline integration; [source and schemas](research.md) |
 | CHECKIN | Account and profile metadata → assigned host and port | Explicit caller-provided TLS or pinned RSA/GCM route | Offline integration; [source and schemas](research.md) |
-| LOGINLIST | Authorized token, UUID and profile → status and exact account identity | Explicit TLS or RSA/GCM; selected Android probe uses historical GCM | Offline integration; [source and schemas](research.md) |
+| LOGINLIST | Authorized token, UUID and profile → status and exact account identity | Pinned GCM for Android legacy and verified TLS for Android tablet | Offline integration. [Source and schemas](advanced-compatibility.md) |
 | PING | Empty BSON → correlated acknowledgment | Caller-managed connected session | Offline recovery test; [recovery](recovery.md) |
 | MSG | Push with chatId and chatLog fields logId, authorId, type, sendAt and optional message/attachment | Historical Agent/node session schemas | Offline tested; malformed and unknown pushes preserved. [Messaging](messaging.md) |
-| WRITE | Basic PC-style chatId, msg, type, noSeen → room-bound chatId, logId and sendAt | Historical Agent basic request and node flat receipt | Offline local TLS round trip. The upstream tablet role has a different request and route. [References](research.md#reference-refresh-on-2026-11-21) |
-| LCHATLIST | Cursor and ID arrays → chatDatas, eof and cursor | Historical connected session | Offline one-page query. [Research](research.md) |
+| WRITE | Text and optional quote/mention extras → room-bound chatId, logId and sendAt | Historical and tablet WRITE profiles | Offline local acknowledgment and ambiguous-delivery tests. [References](advanced-compatibility.md) |
+| LCHATLIST | Cursor and ID arrays → chatDatas, eof and cursor | Connected session | Offline one-page and bounded multi-page queries. [Research](advanced-compatibility.md) |
 | CHATINFO | chatId → chatInfo, echoed chatId, optional type/count/metas or li | Historical connected session | Offline room checks and link association. [Agent source](https://github.com/agent-messenger/agent-messenger/blob/abc81f9873da06ab13503e5124c68fde036c0e9b/src/platforms/kakaotalk/client.ts) |
-| GETMEM | chatId → members and token | Historical connected session | Offline read-only snapshot. [Research](research.md) |
+| GETMEM | chatId → members and token | Connected session | Offline single read and double-observed read-only snapshot. [Research](advanced-compatibility.md) |
 | INFOLINK | lis with one exact link ID → ols with li, ln and optional lt | Historical Agent and node connected session | Offline link lookup; IDs must match. [node schema](https://github.com/storycraft/node-kakao/blob/8512e4699e2cd4c26516b80d38b57b2f85a6cc8a/src/packet/struct/openlink.ts) |
 | SYNCMSG | chatId, cur, cnt, max → bounded chatLogs, isOK and optional minLogId | Historical connected session | Offline history and gap recovery. [Recovery](recovery.md) |
 | NEWMEM / DELMEM | Upstream interprets chatId and chatLog.authorId | Reported by Agent; OpenChat identity and voluntary-leave semantics need corroboration | Unknown raw pushes. [Agent listener](https://github.com/agent-messenger/agent-messenger/blob/abc81f9873da06ab13503e5124c68fde036c0e9b/src/platforms/kakaotalk/listener.ts) |
