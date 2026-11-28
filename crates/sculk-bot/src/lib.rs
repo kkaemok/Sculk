@@ -15,22 +15,29 @@
 //! })?;
 //! # Ok(()) }
 //! ```
+mod blocklist;
 mod command;
 mod permissions;
 mod prefix;
 mod runtime;
+mod schedule;
 mod session;
 mod source;
 
+pub use blocklist::Blocklist;
 pub use command::valid_name as valid_command_name;
 use command::Invocation;
 pub use command::{parse, Command, ParseError, Parsed};
 pub use permissions::{Decision, MemoryPermissions, PermissionId, PermissionStore};
 pub use prefix::valid_prefix;
 pub use runtime::{Bot, Config, Failure, HandlerError, RegistrationError, RunReport, StopReason};
+pub use schedule::{Schedule, Scheduled, ScheduledSource, TimerId};
 pub use sculk_client::{
-    messaging::{Event as ClientEvent, Message, MessageId, MessageType, SenderId, TextReceipt},
-    read_only::RoomId,
+    messaging::{
+        Event as ClientEvent, Message, MessageBuilder, MessageId, MessageType, OutgoingMessage,
+        SenderId, TextReceipt,
+    },
+    read_only::{RoomId, RoomMemberId},
     session::{AuthError, State as SessionState},
     synchronization::{Cursor, Gap},
 };
@@ -77,6 +84,8 @@ pub enum Event {
     Unknown(sculk_client::messaging::Event),
     /// Underlying receive ring overwrote this many packets; recovery is incomplete.
     Lagged(u64),
+    /// Local scheduled event for an explicitly authorized room.
+    Scheduled(Scheduled),
 }
 impl From<sculk_client::messaging::Event> for Event {
     fn from(event: sculk_client::messaging::Event) -> Self {
@@ -95,6 +104,7 @@ pub enum EventKind {
     Synchronization,
     Unknown,
     Lagged,
+    Scheduled,
 }
 impl EventKind {
     pub(crate) fn matches(self, event: &Event) -> bool {
@@ -106,6 +116,7 @@ impl EventKind {
                     | (Self::Synchronization, Event::Synchronization(_))
                     | (Self::Unknown, Event::Unknown(_))
                     | (Self::Lagged, Event::Lagged(_))
+                    | (Self::Scheduled, Event::Scheduled(_))
             )
     }
 }
@@ -126,6 +137,9 @@ pub enum OutboundError {
     /// Local adapter capacity/policy refusal before submission.
     #[error("outbound request not submitted")]
     NotSent,
+    /// Cancellation observed before adapter submission.
+    #[error("outbound request cancelled before submission")]
+    Cancelled,
     /// The peer explicitly rejected the request with a protocol status.
     #[error("outbound request rejected with status {0}")]
     Rejected(i64),
@@ -146,6 +160,16 @@ pub trait Outbound: Send + Sync {
         text: &'a str,
         cancel: watch::Receiver<bool>,
     ) -> BoxFuture<'a, Result<OutboundReceipt, OutboundError>>;
+
+    /// Submit validated structured content. Older text-only adapters refuse it.
+    fn send_message<'a>(
+        &'a self,
+        _room: RoomId,
+        _message: &'a OutgoingMessage,
+        _cancel: watch::Receiver<bool>,
+    ) -> BoxFuture<'a, Result<OutboundReceipt, OutboundError>> {
+        Box::pin(async { Err(OutboundError::Unavailable) })
+    }
 }
 pub(crate) struct DisabledOutbound;
 impl Outbound for DisabledOutbound {
@@ -187,6 +211,7 @@ impl Context {
         match self.event() {
             Event::Message(m) => Some(m.room),
             Event::Synchronization(s) => Some(s.room),
+            Event::Scheduled(event) => Some(event.room),
             _ => None,
         }
     }
@@ -237,7 +262,7 @@ impl Context {
     /// returns unknown delivery; neither this method nor the dispatcher retries.
     pub async fn reply(&self, text: &str) -> Result<OutboundReceipt, OutboundError> {
         if self.is_cancelled() {
-            return Err(OutboundError::NotSent);
+            return Err(OutboundError::Cancelled);
         }
         let room = self.room().ok_or(OutboundError::NotSent)?;
         if text.is_empty() || text.len() > 16384 || text.contains('\0') {
@@ -247,6 +272,24 @@ impl Context {
         tokio::select! { biased;
             _=runtime::cancelled(&mut cancel)=>Err(OutboundError::DeliveryUnknown),
             result=self.outbound.send(room,text,self.cancel.clone())=>result,
+        }
+    }
+
+    /// Quote the active message through the same authorized outbound adapter.
+    pub async fn quote_reply(&self, text: &str) -> Result<OutboundReceipt, OutboundError> {
+        if self.is_cancelled() {
+            return Err(OutboundError::Cancelled);
+        }
+        let source = self.message().ok_or(OutboundError::NotSent)?;
+        let message = MessageBuilder::new()
+            .text(text)
+            .reply_to(source, None)
+            .build()
+            .map_err(|_| OutboundError::NotSent)?;
+        let mut cancel = self.cancel.clone();
+        tokio::select! { biased;
+            _ = runtime::cancelled(&mut cancel) => Err(OutboundError::DeliveryUnknown),
+            result = self.outbound.send_message(source.room, &message, self.cancel.clone()) => result,
         }
     }
 }

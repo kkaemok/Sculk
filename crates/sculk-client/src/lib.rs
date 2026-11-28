@@ -23,8 +23,13 @@ pub mod connect;
 pub mod dial;
 #[cfg(feature = "session-recovery")]
 pub mod managed;
+#[cfg(all(feature = "media", unix))]
+pub mod media;
+#[cfg(feature = "read-only")]
+pub mod members;
 #[cfg(feature = "messaging")]
 pub mod messaging;
+pub mod monitor;
 #[cfg(feature = "protocol-connect")]
 pub mod profile;
 #[cfg(feature = "read-only")]
@@ -132,6 +137,7 @@ enum Control {
 }
 struct Pending {
     command: Command,
+    sent_at: Instant,
     deadline: Instant,
     reply: oneshot::Sender<Result<Packet, Error>>,
 }
@@ -151,6 +157,29 @@ impl Client {
     /// Attach an already-secured, authenticated stream, or an explicitly local
     /// mock stream. This function makes no authentication or encryption claims.
     pub fn from_stream<S>(stream: S, config: Config) -> Result<Self, Error>
+    where
+        S: AsyncRead + AsyncWrite + Unpin + Send + 'static,
+    {
+        Self::attach(stream, config, None)
+    }
+
+    /// Monitor safe metadata on an explicitly secured or local mock stream.
+    pub fn from_monitored_stream<S>(
+        stream: S,
+        config: Config,
+        monitor: &monitor::Monitor,
+    ) -> Result<Self, Error>
+    where
+        S: AsyncRead + AsyncWrite + Unpin + Send + 'static,
+    {
+        Self::attach(stream, config, Some(monitor.next()))
+    }
+
+    fn attach<S>(
+        stream: S,
+        config: Config,
+        monitor: Option<monitor::Observer>,
+    ) -> Result<Self, Error>
     where
         S: AsyncRead + AsyncWrite + Unpin + Send + 'static,
     {
@@ -176,6 +205,7 @@ impl Client {
             state_tx,
             config.clone(),
             stopped,
+            monitor,
         ));
         Ok(Self {
             tx,
@@ -258,6 +288,7 @@ async fn drive<S>(
     state: watch::Sender<ConnectionState>,
     config: Config,
     mut stopped: watch::Receiver<bool>,
+    monitor: Option<monitor::Observer>,
 ) where
     S: AsyncRead + AsyncWrite + Unpin + Send + 'static,
 {
@@ -278,8 +309,7 @@ async fn drive<S>(
                 Some(Control::Shutdown(ack)) => { shutdown = Some(ack); break ConnectionState::Closed; }
                 Some(Control::Request(mut request)) => {
                     pending.retain(|_, p| !p.reply.is_closed());
-                    let expired: Vec<_> = pending.iter().filter(|(_, p)| p.deadline <= Instant::now()).map(|(id, _)| *id).collect();
-                    for id in expired { if let Some(p) = pending.remove(&id) { let _ = p.reply.send(Err(Error::Timeout)); } }
+                    expire_requests(&mut pending, monitor.as_ref(), rx.len());
                     if request.reply.is_closed() { continue; }
                     if request.deadline <= Instant::now() { let _ = request.reply.send(Err(Error::Timeout)); continue; }
                     if pending.len() >= config.requests { let _ = request.reply.send(Err(Error::Overloaded)); continue; }
@@ -289,35 +319,59 @@ async fn drive<S>(
                     let id = next_id;
                     next_id = next;
                     let command = request.packet.command;
-                    let write_deadline = request.deadline.min(Instant::now() + config.write_timeout);
+                    let sent_at = Instant::now();
+                    let write_deadline = request.deadline.min(sent_at + config.write_timeout);
+                    if let Some(monitor) = &monitor {
+                        monitor.record(command, (id, request.packet.body().len() + sculk_protocol::HEADER_LEN),
+                            monitor::Status::Request, None, (pending.len() + 1, rx.len()));
+                    }
                     if !matches!(time::timeout_at(write_deadline, async {
                         tokio::select! { biased;
                             _ = recovery::cancelled(&mut stopped) => Err(sculk_protocol::Error::Truncated),
                             result = framed.send(request.packet) => result,
                         }
                     }).await, Ok(Ok(()))) {
+                        if let Some(monitor) = &monitor {
+                            monitor.record(command, (id, 0), monitor::Status::WriteFailed,
+                                Some(sent_at.elapsed()), (pending.len(), rx.len()));
+                        }
                         let _ = request.reply.send(Err(Error::Closed));
                         break ConnectionState::Lost;
                     }
-                    pending.insert(id, Pending { command, deadline: request.deadline, reply: request.reply });
+                    pending.insert(id, Pending { command, sent_at, deadline: request.deadline, reply: request.reply });
                 }
             },
             packet = framed.next() => match packet {
                 Some(Ok(packet)) => {
                     if let Some(p) = pending.remove(&packet.id) {
+                        let trace = (packet.command, packet.id, packet.body().len() + sculk_protocol::HEADER_LEN);
                         let result = if p.deadline <= Instant::now() { Err(Error::Timeout) }
                             else if packet.command != p.command { Err(Error::Mismatch) }
                             else if packet.status != 0 { Err(Error::Rejected(packet.status)) }
                             else { Ok(packet) };
+                        if let Some(monitor) = &monitor {
+                            let status = match &result {
+                                Ok(_) => monitor::Status::Acknowledged,
+                                Err(Error::Rejected(_)) => monitor::Status::Rejected,
+                                Err(Error::Timeout) => monitor::Status::Timeout,
+                                _ => monitor::Status::Mismatch,
+                            };
+                            monitor.record(trace.0, (trace.1, trace.2), status,
+                                Some(p.sent_at.elapsed()), (pending.len(), rx.len()));
+                        }
                         let _ = p.reply.send(result);
-                    } else { let _ = events.send(Event::UnmatchedPacket(packet)); }
+                    } else {
+                        if let Some(monitor) = &monitor {
+                            monitor.record(packet.command, (0, packet.body().len() + sculk_protocol::HEADER_LEN),
+                                monitor::Status::Event, None, (pending.len(), rx.len()));
+                        }
+                        let _ = events.send(Event::UnmatchedPacket(packet));
+                    }
                 }
                 _ => break ConnectionState::Lost,
             },
             _ = time::sleep_until(deadline) => {
-                let now = Instant::now();
-                let expired: Vec<_> = pending.iter().filter(|(_, p)| p.deadline <= now || p.reply.is_closed()).map(|(id, _)| *id).collect();
-                for id in expired { if let Some(p) = pending.remove(&id) { let _ = p.reply.send(Err(Error::Timeout)); } }
+                expire_requests(&mut pending, monitor.as_ref(), rx.len());
             }
         }
     };
@@ -353,5 +407,33 @@ async fn drive<S>(
     });
     if let Some(ack) = shutdown {
         let _ = ack.send(close_result);
+    }
+}
+
+fn expire_requests(
+    pending: &mut HashMap<u32, Pending>,
+    monitor: Option<&monitor::Observer>,
+    queued: usize,
+) {
+    let now = Instant::now();
+    let expired: Vec<_> = pending
+        .iter()
+        .filter(|(_, request)| request.deadline <= now || request.reply.is_closed())
+        .map(|(id, _)| *id)
+        .collect();
+    for id in expired {
+        let request = pending
+            .remove(&id)
+            .expect("same driver owns pending requests");
+        if let Some(monitor) = monitor.filter(|_| request.deadline <= now) {
+            monitor.record(
+                request.command,
+                (id, 0),
+                monitor::Status::Timeout,
+                Some(request.sent_at.elapsed()),
+                (pending.len(), queued),
+            );
+        }
+        let _ = request.reply.send(Err(Error::Timeout));
     }
 }

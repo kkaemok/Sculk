@@ -3,7 +3,7 @@ mod support;
 use bson::doc;
 use futures_util::{SinkExt, StreamExt};
 use sculk_client::{
-    read_only::{Cursor, Error, RoomId},
+    read_only::{Cursor, Error, ListingLimit, MemberSnapshot, MemberSnapshotLimit, RoomId},
     session::{AccessToken, Grant, RequestError, Session},
     Config,
 };
@@ -130,10 +130,45 @@ async fn bounded_listing_requires_eof_and_preserves_exact_cursors() {
     peer.await.unwrap();
 
     let (mut session, peer) = setup(vec![first()]).await;
-    assert!(matches!(
-        session.chat_rooms_bounded(1, 2).await,
-        Err(Error::IncompleteSnapshot)
-    ));
+    let (_stop, cancel) = watch::channel(false);
+    let listing = session.list_rooms(1, 2, cancel).await.unwrap();
+    assert_eq!(listing.status, Err(ListingLimit::PageLimit));
+    assert_eq!(listing.rooms[0].id.get(), ID);
+    session.disconnect().await;
+    peer.await.unwrap();
+}
+
+#[tokio::test]
+async fn duplicate_members_produce_a_deduplicated_partial_snapshot() {
+    let info = || {
+        packet(
+            "CHATINFO",
+            doc! {"chatInfo":{"chatId":ID,"activeMembersCount":2}},
+        )
+    };
+    let duplicate = || {
+        packet(
+            "GETMEM",
+            doc! {"chatId":ID,"token":1_i64,"members":[{"userId":ID+2},{"userId":ID+2}]},
+        )
+    };
+    let (mut session, peer) = setup(vec![info(), duplicate(), info(), duplicate()]).await;
+    let (_stop, cancel) = watch::channel(false);
+    let snapshot = session
+        .room_member_snapshot(RoomId::new(ID).unwrap(), cancel)
+        .await
+        .unwrap();
+    let MemberSnapshot::Partial {
+        members,
+        expected_count,
+        reason,
+    } = snapshot
+    else {
+        panic!("duplicate claimed complete")
+    };
+    assert_eq!(members.members.len(), 1);
+    assert_eq!(expected_count, Some(2));
+    assert_eq!(reason, MemberSnapshotLimit::DuplicateMember);
     session.disconnect().await;
     peer.await.unwrap();
 }

@@ -23,6 +23,7 @@ path = "../../benches/transport.rs"
 default = []
 read-only = ["secure-session"]
 messaging = ["read-only", "dep:serde", "dep:serde_json"]
+media = ["messaging", "dep:rustix", "rustix/fs"]
 synchronization = ["messaging"]
 session-recovery = ["synchronization", "protocol-connect"]
 checkpoint-file = ["synchronization", "dep:libc", "dep:rustix", "dep:sha2"]

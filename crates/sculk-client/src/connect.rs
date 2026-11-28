@@ -408,7 +408,7 @@ impl Options {
         F: FnMut(Stage, Endpoint) -> Fut,
         Fut: Future<Output = Result<S, std::io::Error>>,
     {
-        self.connect_selected(profile, token, device_uuid, cancel, dial, None)
+        self.connect_selected(profile, token, device_uuid, cancel, dial, (None, None))
             .await
     }
 
@@ -419,7 +419,7 @@ impl Options {
         device_uuid: &str,
         mut cancel: watch::Receiver<bool>,
         mut dial: F,
-        profile: Option<Profile>,
+        selection: (Option<Profile>, Option<crate::monitor::Observer>),
     ) -> Result<Session, Error>
     where
         S: AsyncRead + AsyncWrite + Unpin + Send + 'static,
@@ -427,6 +427,7 @@ impl Options {
         Fut: Future<Output = Result<S, std::io::Error>>,
     {
         self.validate()?;
+        let (profile, monitor) = selection;
         // Preflight all caller-controlled request fields before any connection.
         device.validate_login(&token, device_uuid)?;
         let expires = token.expires_at();
@@ -436,10 +437,10 @@ impl Options {
                 .open(
                     Stage::Booking,
                     self.booking.clone(),
-                    &Protection::Tls,
-                    None,
+                    (&Protection::Tls, None),
                     &mut dial,
                     cancellation.clone(),
+                    monitor.clone(),
                 )
                 .await?;
             let packet = self
@@ -456,10 +457,10 @@ impl Options {
                 .open(
                     Stage::Checkin,
                     endpoint,
-                    &self.checkin,
-                    None,
+                    (&self.checkin, None),
                     &mut dial,
                     cancellation.clone(),
+                    monitor.clone(),
                 )
                 .await?;
             let packet = self
@@ -482,10 +483,10 @@ impl Options {
                 .open(
                     Stage::Login,
                     endpoint,
-                    &self.chat,
-                    tls_name,
+                    (&self.chat, tls_name),
                     &mut dial,
                     cancellation.clone(),
+                    monitor,
                 )
                 .await?;
             let mut session = Session::from_secure_client(chat.0.clone());
@@ -532,10 +533,10 @@ impl Options {
         &self,
         stage: Stage,
         endpoint: Endpoint,
-        protection: &Protection,
-        tls_name: Option<&str>,
+        security: (&Protection, Option<&str>),
         dial: &mut F,
         cancel: watch::Receiver<bool>,
+        monitor: Option<crate::monitor::Observer>,
     ) -> Result<OwnedClient, Error>
     where
         S: AsyncRead + AsyncWrite + Unpin + Send + 'static,
@@ -546,6 +547,7 @@ impl Options {
             let stream = dial(stage, endpoint.clone())
                 .await
                 .map_err(|error| Error::DialIo(stage, error.kind()))?;
+            let (protection, tls_name) = security;
             let client = match protection {
                 Protection::Tls => {
                     let stream = self
@@ -557,12 +559,12 @@ impl Options {
                             cancel,
                         )
                         .await?;
-                    Client::from_stream(stream, self.transport.clone())
+                    Client::attach(stream, self.transport.clone(), monitor)
                 }
                 Protection::LocoGcm(key) => {
                     let stream =
                         SecureStream::establish(stream, key, self.stage_timeout, cancel).await?;
-                    Client::from_stream(stream, self.transport.clone())
+                    Client::attach(stream, self.transport.clone(), monitor)
                 }
             }
             .map_err(|error| Error::Transport(stage, error))?;

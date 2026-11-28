@@ -4,6 +4,7 @@ use crate::session::Session;
 use bson::{doc, Bson, Document};
 use sculk_protocol::{Command, Packet};
 use std::collections::HashSet;
+use tokio::sync::watch;
 
 /// Read-only query failure. No response payload or personal data in errors.
 #[derive(Debug, thiserror::Error)]
@@ -17,6 +18,9 @@ pub enum Error {
     /// The server did not establish a stable or complete result within bounds.
     #[error("read-only snapshot changed or is incomplete")]
     IncompleteSnapshot,
+    /// Read-only operation cancelled.
+    #[error("read-only operation cancelled")]
+    Cancelled,
     /// Peer returned nonzero BSON status.
     #[error("read-only request rejected with status {0}")]
     Rejected(i64),
@@ -104,6 +108,20 @@ pub struct ChatPage {
     /// Required, progressing server cursor when more pages exist.
     pub next: Option<Cursor>,
 }
+/// Why a bounded room listing stopped before explicit EOF.
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub enum ListingLimit {
+    PageLimit,
+    ResultLimit,
+    InvalidProgress,
+    Cancelled,
+}
+
+/// Room summaries observed by a bounded traversal.
+pub struct RoomListing {
+    pub rooms: Vec<RoomSummary>,
+    pub status: Result<(), ListingLimit>,
+}
 /// Raw room metadata entry. Do not log personal content automatically.
 pub struct RoomMeta {
     /// Raw server metadata kind, not interpreted beyond source-backed fields.
@@ -121,6 +139,31 @@ pub struct RoomInfo {
     pub active_members: Option<u32>,
     /// None means the server omitted chatMetas; no synthetic metadata is supplied.
     pub metadata: Option<Vec<RoomMeta>>,
+}
+/// Source-backed fields from one room-bound CHATINFO read.
+#[cfg(feature = "messaging")]
+pub struct RoomDetails {
+    pub info: RoomInfo,
+    pub name: Option<String>,
+    pub kind: Option<RoomKind>,
+    pub link: Option<OpenLinkId>,
+    pub watermark: Option<RoomLog>,
+    pub last_seen: Option<RoomLog>,
+    pub unread: Option<u32>,
+}
+
+#[cfg(feature = "messaging")]
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub enum RoomKind {
+    Named(String),
+    Numeric(i32),
+}
+
+#[cfg(feature = "messaging")]
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub enum RoomLog {
+    Empty,
+    Id(crate::messaging::MessageId),
 }
 /// A member in the requested room. Not asserted to be a stable global identity.
 pub struct Member {
@@ -168,6 +211,66 @@ pub struct Members {
     pub members: Vec<Member>,
     /// Opaque server membership token, not an expiration time.
     pub token: i64,
+}
+
+/// Completeness established by two bounded, read-only observations.
+pub enum MemberSnapshot {
+    Complete(Members),
+    Partial {
+        members: Members,
+        expected_count: Option<u32>,
+        reason: MemberSnapshotLimit,
+    },
+}
+
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub enum MemberSnapshotLimit {
+    MissingCount,
+    CountMismatch,
+    MembershipChanged,
+    DuplicateMember,
+}
+
+/// A mentionable member from a scoped membership observation.
+pub struct MentionTarget<'a> {
+    room: RoomId,
+    member: RoomMemberId,
+    display: &'a str,
+}
+
+impl MentionTarget<'_> {
+    pub fn room(&self) -> RoomId {
+        self.room
+    }
+    pub fn member(&self) -> RoomMemberId {
+        self.member
+    }
+    pub fn display(&self) -> &str {
+        self.display
+    }
+}
+
+impl Members {
+    /// Resolve one exact ID and display name within this observation.
+    pub fn mention_target(&self, target: RoomMemberId) -> Result<MentionTarget<'_>, Error> {
+        let mut matches = self
+            .members
+            .iter()
+            .filter(|member| member.user_id == target.get());
+        let display = matches
+            .next()
+            .and_then(|member| member.nickname.as_deref())
+            .filter(|name| !name.is_empty())
+            .ok_or(Error::InvalidRequest)?;
+        if matches.next().is_some() {
+            return Err(Error::InvalidResponse);
+        }
+        Ok(MentionTarget {
+            room: self.room,
+            member: target,
+            display,
+        })
+    }
 }
 fn number(v: &Bson) -> Result<i64, Error> {
     match v {
@@ -251,6 +354,14 @@ impl Session {
     /// Request one source-profile room page. No automatic repeat, cursor guessing,
     /// read acknowledgment, or last-message retention. Requires an active session.
     pub async fn chat_rooms(&self, cursor: Cursor) -> Result<ChatPage, Error> {
+        let page = self.chat_page(cursor).await?;
+        if page.next == Some(cursor) {
+            return Err(Error::InvalidResponse);
+        }
+        Ok(page)
+    }
+
+    async fn chat_page(&self, cursor: Cursor) -> Result<ChatPage, Error> {
         if cursor.last_chat_id < 0 {
             return Err(Error::InvalidRequest);
         }
@@ -278,7 +389,7 @@ impl Session {
                 last_token_id: required_number(&body, "lastTokenId")?,
                 last_chat_id: required_number(&body, "lastChatId")?,
             };
-            if next.last_chat_id < 0 || next == cursor {
+            if next.last_chat_id < 0 {
                 return Err(Error::InvalidResponse);
             }
             Some(next)
@@ -294,6 +405,20 @@ impl Session {
         max_pages: usize,
         max_rooms: usize,
     ) -> Result<Vec<RoomSummary>, Error> {
+        let (_stop, cancel) = watch::channel(false);
+        let result = self.list_rooms(max_pages, max_rooms, cancel).await?;
+        result.status.map_err(|_| Error::IncompleteSnapshot)?;
+        Ok(result.rooms)
+    }
+
+    /// Traverse exact cursors with bounds and keep partial observations.
+    /// Use `chat_rooms` to consume pages one at a time.
+    pub async fn list_rooms(
+        &self,
+        max_pages: usize,
+        max_rooms: usize,
+        mut cancel: watch::Receiver<bool>,
+    ) -> Result<RoomListing, Error> {
         if !(1..=100).contains(&max_pages) || !(1..=4096).contains(&max_rooms) {
             return Err(Error::InvalidRequest);
         }
@@ -301,33 +426,52 @@ impl Session {
         let mut seen_cursors = HashSet::from([cursor]);
         let mut seen_rooms = HashSet::new();
         let mut rooms = Vec::new();
+        let partial = |rooms, reason| {
+            Ok(RoomListing {
+                rooms,
+                status: Err(reason),
+            })
+        };
         for _ in 0..max_pages {
-            let page = self.chat_rooms(cursor).await?;
+            let page = tokio::select! { biased;
+                _ = crate::recovery::cancelled(&mut cancel) =>
+                    return partial(rooms, ListingLimit::Cancelled),
+                page = self.chat_page(cursor) => page?,
+            };
             if page.rooms.is_empty() && !page.eof {
-                return Err(Error::IncompleteSnapshot);
+                return partial(rooms, ListingLimit::InvalidProgress);
             }
             for room in page.rooms {
                 if seen_rooms.insert(room.id) {
                     if rooms.len() == max_rooms {
-                        return Err(Error::IncompleteSnapshot);
+                        return partial(rooms, ListingLimit::ResultLimit);
                     }
                     rooms.push(room);
                 }
             }
             match page.next {
-                None => return Ok(rooms),
+                None => {
+                    return Ok(RoomListing {
+                        rooms,
+                        status: Ok(()),
+                    })
+                }
                 Some(next) if seen_cursors.insert(next) => cursor = next,
-                _ => return Err(Error::IncompleteSnapshot),
+                _ => return partial(rooms, ListingLimit::InvalidProgress),
             }
         }
-        Err(Error::IncompleteSnapshot)
+        partial(rooms, ListingLimit::PageLimit)
     }
 
     /// Fetch the documented CHATINFO subset. The returned chatId must match.
     pub async fn room_info(&self, room: RoomId) -> Result<RoomInfo, Error> {
         let data = self.room_document(room).await?;
+        Self::room_info_from(room, &data)
+    }
+
+    fn room_info_from(room: RoomId, data: &Document) -> Result<RoomInfo, Error> {
         let metadata = if data.contains_key("chatMetas") {
-            let array = values(&data, "chatMetas")?;
+            let array = values(data, "chatMetas")?;
             if array.len() > 128 {
                 return Err(Error::InvalidResponse);
             }
@@ -349,9 +493,53 @@ impl Session {
         };
         Ok(RoomInfo {
             id: room,
-            kind: text(&data, "type", 128)?,
-            active_members: count(&data, "activeMembersCount")?,
+            kind: text(data, "type", 128)?,
+            active_members: count(data, "activeMembersCount")?,
             metadata,
+        })
+    }
+
+    /// Read the explicit title, link, watermark and available read-state
+    /// metadata. A read-state query never sends a read receipt.
+    #[cfg(feature = "messaging")]
+    pub async fn room_details(&self, room: RoomId) -> Result<RoomDetails, Error> {
+        let mut data = self.room_document(room).await?;
+        let kind = match data.get("type") {
+            None => None,
+            Some(Bson::String(_)) => text(&data, "type", 128)?.map(RoomKind::Named),
+            Some(value) => Some(RoomKind::Numeric(
+                i32::try_from(number(value)?).map_err(|_| Error::InvalidResponse)?,
+            )),
+        };
+        if matches!(kind, Some(RoomKind::Numeric(_))) {
+            data.remove("type");
+        }
+        let info = Self::room_info_from(room, &data)?;
+        let name = info
+            .metadata
+            .as_deref()
+            .and_then(|entries| {
+                entries
+                    .iter()
+                    .find(|entry| entry.kind == 3 && !entry.content.is_empty())
+            })
+            .map(|entry| entry.content.clone());
+        let link = room_link(&data)?;
+        let watermark = room_log(&data, "lastLogId")?;
+        let last_seen = room_log(&data, "lastSeenLogId")?;
+        let unread = match data.get("invalidNewMessageCount") {
+            None | Some(Bson::Boolean(false)) => count(&data, "newMessageCount")?,
+            Some(Bson::Boolean(true)) => None,
+            _ => return Err(Error::InvalidResponse),
+        };
+        Ok(RoomDetails {
+            info,
+            name,
+            kind,
+            link,
+            watermark,
+            last_seen,
+            unread,
         })
     }
     async fn room_document(&self, room: RoomId) -> Result<Document, Error> {
@@ -370,12 +558,7 @@ impl Session {
     /// the peer omitted the association or supplied its zero sentinel.
     pub async fn room_open_link(&self, room: RoomId) -> Result<Option<OpenLinkId>, Error> {
         let data = self.room_document(room).await?;
-        match data.get("li").map(number).transpose()? {
-            None | Some(0) => Ok(None),
-            Some(value) => OpenLinkId::new(value)
-                .map(Some)
-                .map_err(|_| Error::InvalidResponse),
-        }
+        room_link(&data)
     }
 
     /// Inspect a known OpenChat link using INFOLINK. An empty response list
@@ -435,27 +618,56 @@ impl Session {
     /// when both observations agree on their member IDs and active counts.
     /// No room entry, read acknowledgment or enrollment is performed.
     pub async fn room_members_verified(&self, room: RoomId) -> Result<Members, Error> {
-        let (first_count, first_display) = self.room_member_view(room).await?;
-        let first_members = self.room_members(room).await?;
-        let (second_count, second_display) = self.room_member_view(room).await?;
-        let second_members = self.room_members(room).await?;
-        let first_ids = unique_members(first_members.members.iter().map(|member| member.user_id))?;
-        let second_ids =
-            unique_members(second_members.members.iter().map(|member| member.user_id))?;
-        if first_count != second_count
-            || first_display != second_display
-            || first_ids != second_ids
-            || second_ids.len() != second_count as usize
-            || !second_display.is_subset(&second_ids)
-        {
-            return Err(Error::IncompleteSnapshot);
+        match self.observe_members(room).await? {
+            MemberSnapshot::Complete(members) => Ok(members),
+            MemberSnapshot::Partial { .. } => Err(Error::IncompleteSnapshot),
         }
-        Ok(second_members)
     }
 
-    async fn room_member_view(&self, room: RoomId) -> Result<(u32, HashSet<i64>), Error> {
+    /// Verify a bounded snapshot without room entry, with explicit partial results.
+    pub async fn room_member_snapshot(
+        &self,
+        room: RoomId,
+        mut cancel: watch::Receiver<bool>,
+    ) -> Result<MemberSnapshot, Error> {
+        tokio::select! { biased;
+            _ = crate::recovery::cancelled(&mut cancel) => Err(Error::Cancelled),
+            snapshot = self.observe_members(room) => snapshot,
+        }
+    }
+
+    async fn observe_members(&self, room: RoomId) -> Result<MemberSnapshot, Error> {
+        let (first_count, first_display) = self.room_member_view(room).await?;
+        let mut first_members = self.room_members(room).await?;
+        let (second_count, second_display) = self.room_member_view(room).await?;
+        let mut second_members = self.room_members(room).await?;
+        let (first_ids, first_duplicate) = dedup_members(&mut first_members);
+        let (second_ids, second_duplicate) = dedup_members(&mut second_members);
+        let reason = if first_duplicate || second_duplicate {
+            MemberSnapshotLimit::DuplicateMember
+        } else if first_count != second_count
+            || first_display != second_display
+            || first_ids != second_ids
+        {
+            MemberSnapshotLimit::MembershipChanged
+        } else if let Some(count) = second_count {
+            if second_ids.len() == count as usize && second_display.is_subset(&second_ids) {
+                return Ok(MemberSnapshot::Complete(second_members));
+            }
+            MemberSnapshotLimit::CountMismatch
+        } else {
+            MemberSnapshotLimit::MissingCount
+        };
+        Ok(MemberSnapshot::Partial {
+            members: second_members,
+            expected_count: second_count,
+            reason,
+        })
+    }
+
+    async fn room_member_view(&self, room: RoomId) -> Result<(Option<u32>, HashSet<i64>), Error> {
         let info = self.room_document(room).await?;
-        let count = count(&info, "activeMembersCount")?.ok_or(Error::InvalidResponse)?;
+        let count = count(&info, "activeMembersCount")?;
         let display = if info.contains_key("displayMembers") {
             let ids = values(&info, "displayMembers")?
                 .iter()
@@ -469,6 +681,33 @@ impl Session {
             HashSet::new()
         };
         Ok((count, display))
+    }
+}
+
+fn dedup_members(members: &mut Members) -> (HashSet<i64>, bool) {
+    let mut seen = HashSet::new();
+    let total = members.members.len();
+    members.members.retain(|member| seen.insert(member.user_id));
+    (seen, members.members.len() != total)
+}
+
+fn room_link(data: &Document) -> Result<Option<OpenLinkId>, Error> {
+    match data.get("li").map(number).transpose()? {
+        None | Some(0) => Ok(None),
+        Some(value) => OpenLinkId::new(value)
+            .map(Some)
+            .map_err(|_| Error::InvalidResponse),
+    }
+}
+
+#[cfg(feature = "messaging")]
+fn room_log(data: &Document, name: &str) -> Result<Option<RoomLog>, Error> {
+    match data.get(name).map(number).transpose()? {
+        None => Ok(None),
+        Some(0) => Ok(Some(RoomLog::Empty)),
+        Some(id) => crate::messaging::MessageId::new(id)
+            .map(|id| Some(RoomLog::Id(id)))
+            .map_err(|_| Error::InvalidResponse),
     }
 }
 

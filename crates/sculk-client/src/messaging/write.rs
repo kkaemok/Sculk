@@ -19,6 +19,12 @@ pub enum SendError {
     /// Admission/authentication refused before writing.
     #[error("text request was not sent")]
     NotSent,
+    /// Cancellation observed before admission.
+    #[error("outbound request cancelled before submission")]
+    Cancelled,
+    /// The profile has no supported submission path for this operation.
+    #[error("unsupported outbound operation: {0:?}")]
+    Unsupported(Operation),
     /// Nonzero header/BSON status, preserved without speculative interpretation.
     #[error("text request rejected with status {0}")]
     Rejected(i64),
@@ -29,6 +35,21 @@ pub enum SendError {
     /// submission; absence of evidence is not evidence that nothing was sent.
     #[error("text delivery unknown; do not automatically resend")]
     DeliveryUnknown,
+}
+
+/// Non-idempotent messaging operation. Capability checks do not submit a packet.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum Operation {
+    Text,
+    Mention,
+    Quote,
+    Upload,
+    Delete,
+    Edit,
+    React,
+    Typing,
+    Forward,
+    Thread,
 }
 impl TextRequest {
     /// Local policy: nonempty text, at most 16 KiB UTF-8, no NUL. This is not a
@@ -213,6 +234,29 @@ fn write_packet(
 }
 
 impl MessageSender {
+    /// Check availability before issuing a mutation, without touching the network.
+    pub fn require(&self, operation: Operation) -> Result<(), SendError> {
+        match operation {
+            Operation::Text | Operation::Mention | Operation::Quote => Ok(()),
+            other => Err(SendError::Unsupported(other)),
+        }
+    }
+
+    /// Explicit media boundary. A validated plan still requires an independently
+    /// verified transport, upload receipt and message submission contract.
+    #[cfg(all(feature = "media", unix))]
+    pub async fn send_attachments(
+        &self,
+        _room: RoomId,
+        _plan: crate::media::Plan,
+        cancel: watch::Receiver<bool>,
+    ) -> Result<TextReceipt, SendError> {
+        if *cancel.borrow() || cancel.has_changed().is_err() {
+            return Err(SendError::Cancelled);
+        }
+        self.require(Operation::Upload)?;
+        Err(SendError::Unsupported(Operation::Upload))
+    }
     pub(crate) fn new(
         client: crate::Client,
         state: watch::Receiver<State>,
@@ -259,9 +303,10 @@ impl MessageSender {
         extra: Option<&str>,
         mut cancel: watch::Receiver<bool>,
     ) -> Result<TextReceipt, SendError> {
-        if *cancel.borrow()
-            || cancel.has_changed().is_err()
-            || *self.state.borrow() != State::Authenticated
+        if *cancel.borrow() || cancel.has_changed().is_err() {
+            return Err(SendError::Cancelled);
+        }
+        if *self.state.borrow() != State::Authenticated
             || self.deadline <= Instant::now()
             || self.client.state() != crate::ConnectionState::Connected
         {
@@ -270,7 +315,7 @@ impl MessageSender {
         let client_message_id = self.mode.next_message_id()?;
         let packet = write_packet(room, text, kind, extra, client_message_id)?;
         if *cancel.borrow() || cancel.has_changed().is_err() {
-            return Err(SendError::NotSent);
+            return Err(SendError::Cancelled);
         }
         let response = self.client.submit(packet).map_err(|_| SendError::NotSent)?;
         tokio::select! { biased;

@@ -83,6 +83,7 @@ pub struct Connector {
     device: DeviceProfile,
     options: Options,
     owner: Arc<Semaphore>,
+    monitor: Option<crate::monitor::Monitor>,
     #[cfg(feature = "messaging")]
     sequence: std::sync::Arc<std::sync::atomic::AtomicI64>,
 }
@@ -134,6 +135,7 @@ impl Connector {
             device,
             options,
             owner: Arc::new(Semaphore::new(1)),
+            monitor: None,
             #[cfg(feature = "messaging")]
             sequence: std::sync::Arc::new(std::sync::atomic::AtomicI64::new(-1)),
         })
@@ -142,6 +144,11 @@ impl Connector {
     /// Profile selected before authentication.
     pub fn profile(&self) -> Profile {
         self.profile
+    }
+
+    /// Collect bounded headers and transport statistics for future generations.
+    pub fn monitor(&mut self, monitor: crate::monitor::Monitor) {
+        self.monitor = Some(monitor);
     }
 
     /// Use an already authorized credential for this profile and stable device.
@@ -171,7 +178,10 @@ impl Connector {
                 device_uuid,
                 cancel,
                 dial,
-                Some(self.profile),
+                (
+                    Some(self.profile),
+                    self.monitor.as_ref().map(|monitor| monitor.next()),
+                ),
             )
             .await?;
         session.set_profile(self.profile, owner);

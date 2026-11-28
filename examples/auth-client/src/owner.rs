@@ -287,6 +287,10 @@ impl Prepared {
         self.room
     }
 
+    pub fn monitor(&mut self, monitor: sculk_client::monitor::Monitor) {
+        self.connector.monitor(monitor);
+    }
+
     fn profile_validated(&self) -> bool {
         self.config.profile_validated
             && (self.connector.profile() == Profile::AndroidLegacy

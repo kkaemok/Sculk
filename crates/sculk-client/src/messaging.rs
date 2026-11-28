@@ -14,7 +14,7 @@ mod write;
 pub use builder::{MessageBuilder, OutgoingMessage};
 pub use content::{Attachment, Media, Mention, MessageContent, ThreadMetadata};
 pub(crate) use write::WriteMode;
-pub use write::{MessageSender, SendError, TextReceipt, TextRequest, TextSender};
+pub use write::{MessageSender, Operation, SendError, TextReceipt, TextRequest, TextSender};
 
 macro_rules! identifier {
     ($name:ident) => {
@@ -230,6 +230,11 @@ pub struct Message {
     pub sent_at_seconds: i64,
 }
 impl Message {
+    /// Interpret the sender within this message's room, for local room policy.
+    pub fn room_member(&self) -> Option<crate::read_only::RoomMemberId> {
+        crate::read_only::RoomMemberId::new(self.sender.get()).ok()
+    }
+
     /// Parse only MSG. Required subset: chatId, chatLog(logId, authorId, type,
     /// sendAt); optional source fields are checked if present. Some public push
     /// handlers omit nested chatId and outer logId, so these are optional echoes
@@ -300,6 +305,14 @@ impl Message {
     /// unknown/invalid attachment JSON is preserved, never silently discarded.
     pub fn attachment(&self) -> Option<&str> {
         string(self.log(), "attachment").expect("validated MSG")
+    }
+    /// OpenChat link, when explicitly carried by the source MSG envelope.
+    pub fn open_link(&self) -> Option<crate::read_only::OpenLinkId> {
+        if self.packet.command.as_str() != "MSG" {
+            return None;
+        }
+        let link = integer(body(&self.packet).ok()?, "li").ok()?;
+        crate::read_only::OpenLinkId::new(link).ok()
     }
     /// Decode the historical quoted-reply attachment subset on demand. The
     /// original attachment is retained even when its schema is invalid.
@@ -393,6 +406,22 @@ pub enum Event {
     /// Known MSG with invalid/ambiguous fields; raw evidence retained.
     Malformed(Packet),
 }
+
+/// What the source membership command observed. A departure carries no cause.
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub enum MembershipKind {
+    Added,
+    Departed,
+}
+
+/// Exact room-scoped membership observation. Raw metadata remains on the event.
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub struct MembershipChange {
+    pub room: RoomId,
+    pub member: crate::read_only::RoomMemberId,
+    pub kind: MembershipKind,
+}
+
 impl Event {
     /// Decode on the consumer, outside the network receive task.
     pub fn from_packet(packet: Packet) -> Self {
@@ -403,6 +432,33 @@ impl Event {
             Ok(message) => Self::Message(message),
             Err(_) => Self::Malformed(packet),
         }
+    }
+
+    /// Validate NEWMEM or DELMEM on demand. The raw envelope remains available
+    /// even when the packet is ambiguous or a known field does not validate.
+    pub fn membership(&self) -> Result<Option<MembershipChange>, InvalidMessage> {
+        let Self::Unknown(packet) = self else {
+            return Ok(None);
+        };
+        let kind = match packet.command.as_str() {
+            "NEWMEM" => MembershipKind::Added,
+            "DELMEM" => MembershipKind::Departed,
+            _ => return Ok(None),
+        };
+        let doc = body(packet)?;
+        let log = chat_log(doc)?;
+        fields(doc)?;
+        fields(log)?;
+        if packet.status != 0 || (value(doc, "status")?.is_some() && integer(doc, "status")? != 0) {
+            return Err(InvalidMessage);
+        }
+        let room = RoomId::new(integer(doc, "chatId")?).map_err(|_| InvalidMessage)?;
+        if value(log, "chatId")?.is_some() && integer(log, "chatId")? != room.get() {
+            return Err(InvalidMessage);
+        }
+        let member = crate::read_only::RoomMemberId::new(integer(log, "authorId")?)
+            .map_err(|_| InvalidMessage)?;
+        Ok(Some(MembershipChange { room, member, kind }))
     }
 }
 /// Predictable receive outcomes, with no silent catch-up or automatic replay.

@@ -119,6 +119,7 @@ pub struct Bot {
     errors: Vec<Handler>,
     permissions: Permissions,
     outbound: Arc<dyn Outbound>,
+    blocklist: crate::Blocklist,
 }
 impl Bot {
     /// Validate limits; creates no tasks, timers or connections.
@@ -149,6 +150,7 @@ impl Bot {
                 store: Arc::new(MemoryPermissions::default()),
             },
             outbound: Arc::new(DisabledOutbound),
+            blocklist: crate::Blocklist::default(),
         })
     }
     /// Framework-wide command case policy. Unicode lowercase is used when false;
@@ -213,6 +215,10 @@ impl Bot {
     /// Configure an explicit adapter; default reply attempts fail locally.
     pub fn outbound(&mut self, outbound: Arc<dyn Outbound>) {
         self.outbound = outbound;
+    }
+    /// Suppress local message dispatch for explicitly blocked room members.
+    pub fn blocklist(&mut self, list: crate::Blocklist) {
+        self.blocklist = list;
     }
     /// Register at most 128 permission identifiers with explicit defaults.
     pub fn permission(&mut self, id: PermissionId, default: bool) -> Result<(), RegistrationError> {
@@ -455,6 +461,13 @@ impl Bot {
         work
     }
     async fn dispatch_one(&self, mut ctx: Context, work: &mut Work) {
+        if ctx.message().is_some_and(|message| {
+            message
+                .room_member()
+                .is_some_and(|member| self.blocklist.contains(message.room, member))
+        }) {
+            return;
+        }
         for (kind, handler) in &self.handlers {
             if kind.matches(ctx.event()) {
                 if let Err(error) = handler(ctx.clone()).await {

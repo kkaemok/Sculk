@@ -7,7 +7,7 @@ use sculk_client::{
         Attachment, Event, Message, MessageBuilder, MessageType, ReceiveError, SendError,
         TextRequest,
     },
-    read_only::{OpenLinkId, RoomId, RoomMemberId},
+    read_only::{Member, Members, OpenLinkId, RoomId, RoomMemberId},
     session::{AccessToken, Grant, RequestError, Session},
     Config, Error,
 };
@@ -17,6 +17,31 @@ use tokio::{io::DuplexStream, sync::watch, time::Instant};
 use tokio_rustls::server::TlsStream;
 use tokio_util::codec::Framed;
 const ID: i64 = 9_007_199_254_740_993;
+
+#[test]
+fn member_departure_preserves_a_room_scoped_observation_and_unknown_cause() {
+    use sculk_client::messaging::MembershipKind;
+    let raw = packet(
+        "DELMEM",
+        doc! {"chatId":ID,"chatLog":{"authorId":ID+1,"future":"opaque"}},
+    );
+    let event = Event::from_packet(raw.clone());
+    let observed = event.membership().unwrap().unwrap();
+    assert_eq!(observed.kind, MembershipKind::Departed);
+    assert_eq!(observed.room.get(), ID);
+    assert_eq!(observed.member.get(), ID + 1);
+    assert!(matches!(event, Event::Unknown(original) if original == raw));
+    assert!(Event::from_packet(packet("KICKOUT", doc! {"chatId":ID}))
+        .membership()
+        .unwrap()
+        .is_none());
+    assert!(Event::from_packet(packet(
+        "NEWMEM",
+        doc! {"chatId":ID,"chatLog":{"authorId":ID+1,"chatId":ID+2}}
+    ))
+    .membership()
+    .is_err());
+}
 fn packet(command: &str, doc: bson::Document) -> Packet {
     Packet::from_document(0, Command::new(command).unwrap(), &doc).unwrap()
 }
@@ -66,12 +91,32 @@ async fn composed_quote_with_mentions_uses_one_room_bound_write() {
     let (stop, cancel) = watch::channel(false);
     let source = Message::from_packet(message()).unwrap();
     let member = RoomMemberId::new(ID + 30).unwrap();
-    assert!(MessageBuilder::new().mention(member, "😀").build().is_err());
+    let members = |room, nickname: &str| Members {
+        room,
+        token: 0,
+        members: vec![Member {
+            user_id: member.get(),
+            nickname: Some(nickname.to_owned()),
+        }],
+    };
+    let snapshot = members(source.room, "홍길동");
+    let target = snapshot.mention_target(member).unwrap();
+    let emoji = members(source.room, "😀");
+    assert!(MessageBuilder::new()
+        .mention(&emoji.mention_target(member).unwrap())
+        .build()
+        .is_err());
+    let other = members(RoomId::new(ID + 1).unwrap(), "other");
+    assert!(MessageBuilder::new()
+        .mention(&other.mention_target(member).unwrap())
+        .reply_to(&source, None)
+        .build()
+        .is_err());
     let content = MessageBuilder::new()
-        .text("literal@ ")
-        .mention(member, "홍길동")
+        .text("😀literal@ ")
+        .mention(&target)
         .text(" and ")
-        .mention(member, "홍길동")
+        .mention(&target)
         .reply_to(&source, Some(OpenLinkId::new(ID + 20).unwrap()))
         .build()
         .unwrap();
@@ -88,7 +133,10 @@ async fn composed_quote_with_mentions_uses_one_room_bound_write() {
         assert_eq!(req.command.as_str(), "WRITE");
         let doc = req.document().unwrap();
         assert_eq!(doc.get_i32("type").unwrap(), 26);
-        assert_eq!(doc.get_str("msg").unwrap(), "literal@ @홍길동 and @홍길동");
+        assert_eq!(
+            doc.get_str("msg").unwrap(),
+            "😀literal@ @홍길동 and @홍길동"
+        );
         let extra: serde_json::Value = serde_json::from_str(doc.get_str("extra").unwrap()).unwrap();
         assert_eq!(extra["src_logId"].as_i64(), Some(ID + 1));
         assert_eq!(extra["src_userId"].as_i64(), Some(ID + 2));
@@ -484,7 +532,7 @@ async fn authenticated_sender_correlates_room_ack_rejection_and_cancellation_wit
             .send_text(room, "synthetic", cancel.clone())
             .await
             .unwrap_err(),
-        SendError::NotSent,
+        SendError::Cancelled,
     );
     stop.send_replace(false);
     let (result, ()) = tokio::join!(session.send_text(room, "안녕", cancel.clone()), async {

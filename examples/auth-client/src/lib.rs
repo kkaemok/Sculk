@@ -9,6 +9,7 @@ pub use owner::{permit_service, preflight, signal_channel, Approved, Authorized,
 use sculk_client::{
     auth,
     messaging::{Event as MessageEvent, SendError},
+    monitor::{Monitor, Status as PacketStatus},
     read_only::Cursor,
 };
 use serde::Serialize;
@@ -37,6 +38,7 @@ struct Arguments {
     receive_one: Option<u64>,
     send_one: Option<u64>,
     report: Option<PathBuf>,
+    trace: Option<bool>,
 }
 impl Arguments {
     fn parse(args: &[String]) -> Result<Self, Failure> {
@@ -50,6 +52,7 @@ impl Arguments {
             receive_one: None,
             send_one: None,
             report: None,
+            trace: None,
         };
         if args.is_empty() || args == ["--help"] {
             return Ok(result);
@@ -116,6 +119,11 @@ impl Arguments {
                 "--report" if result.report.is_none() && index + 1 < args.len() => {
                     index += 1;
                     result.report = Some(PathBuf::from(&args[index]));
+                }
+                "--protocol-monitor" | "--protocol-stats"
+                    if result.mode == Mode::Live && result.trace.is_none() =>
+                {
+                    result.trace = Some(args[index] == "--protocol-monitor");
                 }
                 _ => return Err(fail("invalid, duplicated or unsafe option; use --help")),
             }
@@ -186,6 +194,8 @@ fn failure_category(error: &Failure) -> &'static str {
     if let Some(error) = error.downcast_ref::<SendError>() {
         return match error {
             SendError::InvalidRequest | SendError::NotSent => "write-not-submitted",
+            SendError::Cancelled => "write-cancelled-before-submission",
+            SendError::Unsupported(_) => "unsupported-operation",
             SendError::Rejected(_) => "write-rejected",
             SendError::TimeoutUnknown => "write-timeout-delivery-unknown",
             SendError::DeliveryUnknown => "write-delivery-unknown",
@@ -416,7 +426,7 @@ fn attempt(args: &Arguments, progress: &Progress) -> Result<(), Failure> {
         || args.receive_one.is_some()
         || args.send_one.is_some()
         || args.room_info;
-    let prepared = Prepared::load(path, progress, selected)?;
+    let mut prepared = Prepared::load(path, progress, selected)?;
     let room = prepared.room();
     if matches!(args.mode, Mode::DryRun | Mode::CheckRoom) {
         progress.stage.set(Stage::LocalValidationComplete);
@@ -431,8 +441,12 @@ fn attempt(args: &Arguments, progress: &Progress) -> Result<(), Failure> {
         .enable_all()
         .build()?;
     let message = args.send_one.map(|_| prepared.test_message()).transpose()?;
+    let monitor = args.trace.map(|_| Monitor::new(128)).transpose()?;
+    if let Some(monitor) = &monitor {
+        prepared.monitor(monitor.clone());
+    }
     let approval = prepared.permit_terminal(progress, selected, false)?;
-    runtime.block_on(async {
+    let result = runtime.block_on(async {
         let (signal, cancel) = signal_channel()?;
         let result = async {
             let authorized = prepared.authorize(approval, args.refresh, progress, cancel.clone()).await?;
@@ -505,7 +519,36 @@ fn attempt(args: &Arguments, progress: &Progress) -> Result<(), Failure> {
         }.await;
         signal.abort();
         result
-    })
+    });
+    if let Some(monitor) = &monitor {
+        print_protocol_monitor(monitor, args.trace == Some(true));
+    }
+    result
+}
+
+fn print_protocol_monitor(monitor: &Monitor, trace: bool) {
+    let (stats, entries) = monitor.snapshot();
+    if trace {
+        for entry in entries {
+            let direction = match entry.status {
+                PacketStatus::Request => "TX",
+                PacketStatus::Acknowledged
+                | PacketStatus::Rejected
+                | PacketStatus::Mismatch
+                | PacketStatus::Event => "RX",
+                PacketStatus::Timeout | PacketStatus::WriteFailed => "LOCAL",
+            };
+            let duration_ms = entry.elapsed.map(|elapsed| elapsed.as_millis());
+            println!("{} {direction} {} {:?} generation={} correlation={} bytes={} elapsed-ms={duration_ms:?} pending={} queued={}",
+                entry.time_ms, entry.command, entry.status, entry.generation, entry.correlation,
+                entry.packet_bytes, entry.pending, entry.queued);
+        }
+    }
+    println!(
+        "protocol generations={} requests={} acknowledgments={} rejections={} failures={} events={} peak-pending={} peak-queued={} trace-overwritten={} trace-dropped={}",
+        stats.generations, stats.requests, stats.acknowledgments, stats.rejections, stats.failures,
+        stats.events, stats.pending_peak, stats.queued_peak, stats.overwritten, stats.dropped
+    );
 }
 #[cfg(test)]
 mod tests {

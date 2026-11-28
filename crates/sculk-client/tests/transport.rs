@@ -16,6 +16,41 @@ fn packet(name: &str) -> Packet {
     )
     .unwrap()
 }
+
+#[tokio::test]
+async fn monitor_bounds_history_and_masks_unrecognized_commands() {
+    use sculk_client::monitor::{Monitor, Status};
+    let (local, peer) = duplex(1024);
+    let monitor = Monitor::new(2).unwrap();
+    let client = Client::from_monitored_stream(local, Config::default(), &monitor).unwrap();
+    let mut peer = Framed::new(peer, LocoCodec::default());
+    let mut events = client.subscribe();
+    let (receipt, ()) = tokio::join!(client.request(packet("LOGINLIST")), async {
+        let request = peer.next().await.unwrap().unwrap();
+        let mut event = packet("PRIVATE");
+        event.id = 999;
+        peer.send(event).await.unwrap();
+        peer.send(request).await.unwrap();
+    });
+    receipt.unwrap();
+    events.recv().await.unwrap();
+    let (stats, trace) = monitor.snapshot();
+    assert_eq!(
+        (
+            stats.requests,
+            stats.acknowledgments,
+            stats.events,
+            stats.overwritten
+        ),
+        (1, 1, 1, 1)
+    );
+    assert_eq!(trace[0].status, Status::Event);
+    assert_eq!(trace[0].command, "OTHER");
+    assert_eq!(trace[0].correlation, 0);
+    assert_eq!(trace[1].command, "LOGINLIST");
+    assert!(trace[1].elapsed.is_some());
+    assert!(!format!("{trace:?}").contains("PRIVATE"));
+}
 #[tokio::test]
 async fn out_of_order_responses_and_events_on_tcp() {
     let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
